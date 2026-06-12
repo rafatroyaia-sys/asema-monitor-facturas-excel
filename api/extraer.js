@@ -46,11 +46,14 @@ export default async function handler(req, res) {
   }
 
   // --- Control de acceso del despacho ---
-  const clave = req.headers["x-asema-key"];
-  if (!process.env.ASEMA_PASSWORD) {
+  // .trim() en ambos lados: elimina espacios y saltos de linea invisibles
+  // que a veces se cuelan al definir variables de entorno desde la CLI.
+  const clave = String(req.headers["x-asema-key"] || "").trim();
+  const esperada = String(process.env.ASEMA_PASSWORD || "").trim();
+  if (!esperada) {
     return res.status(500).json({ error: "El servidor no tiene configurada la variable ASEMA_PASSWORD" });
   }
-  if (!clave || clave !== process.env.ASEMA_PASSWORD) {
+  if (!clave || clave !== esperada) {
     return res.status(401).json({ error: "Clave del despacho incorrecta" });
   }
   if (!process.env.ANTHROPIC_API_KEY) {

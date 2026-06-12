@@ -36,6 +36,13 @@ const C = {
 const MONO = "ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Menlo, monospace";
 const MAX_MB = 4; // límite de Vercel por petición (~4,5 MB); escanea a 150-200 ppp
 
+/* Elimina caracteres invisibles (BOM, espacios de ancho cero, control)
+   que se cuelan al copiar y pegar desde Word, PDF o notas. */
+const limpiaClave = (s) =>
+  String(s || "")
+    .replace(/[\u0000-\u001F\u007F\u200B-\u200D\u2060\uFEFF]/g, "")
+    .trim();
+
 /* ---------- Cuentas de Monitor (módulo autónomos / EOS) ---------- */
 const CUENTAS = [
   { n: 1, t: "VENTAS" },
@@ -174,7 +181,7 @@ async function extraerFacturas(file, empresa, claveDespacho) {
 
   const resp = await fetch("/api/extraer", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-asema-key": claveDespacho },
+    headers: { "Content-Type": "application/json", "x-asema-key": limpiaClave(claveDespacho) },
     body: JSON.stringify({ media_type: media, data: b64, empresa }),
   });
   let data = {};
@@ -268,7 +275,7 @@ function validarFila(row, rows) {
 /* ============================================================ */
 export default function App() {
   const [claveDespacho, setClaveDespacho] = useState(() => {
-    try { return localStorage.getItem("asema_clave") || ""; } catch { return ""; }
+    try { return limpiaClave(localStorage.getItem("asema_clave")); } catch { return ""; }
   });
   const [autenticado, setAutenticado] = useState(() => {
     try { return !!localStorage.getItem("asema_clave"); } catch { return false; }
@@ -305,7 +312,7 @@ export default function App() {
 
   /* ----- Acceso ----- */
   const entrar = () => {
-    const k = claveInput.trim();
+    const k = limpiaClave(claveInput);
     if (!k) { setAvisoClave("Escribe la clave del despacho."); return; }
     try { localStorage.setItem("asema_clave", k); } catch { /* seguimos en memoria */ }
     setClaveDespacho(k);
