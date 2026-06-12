@@ -7,6 +7,11 @@
    La clave API NUNCA llega al navegador.
    ============================================================ */
 
+/* Limpia secretos (clave API, contraseña): elimina BOM, saltos de linea,
+   espacios y cualquier caracter invisible que se cuele al pegar el valor
+   en las variables de entorno de Vercel. */
+const limpiaSecreto = (s) => String(s || "").replace(/[^\x21-\x7E]/g, "");
+
 const buildPrompt = (empresa) => `Eres el sistema de extracción contable de una asesoría española (Graduado Social). Analiza el documento adjunto, que contiene una o varias facturas escaneadas, y devuelve EXCLUSIVAMENTE un objeto JSON válido. Sin markdown, sin comentarios, sin texto antes ni después.
 
 TITULAR DE LA CONTABILIDAD (cliente de la asesoría, régimen de estimación directa simplificada):
@@ -48,8 +53,8 @@ export default async function handler(req, res) {
   // --- Control de acceso del despacho ---
   // .trim() en ambos lados: elimina espacios y saltos de linea invisibles
   // que a veces se cuelan al definir variables de entorno desde la CLI.
-  const clave = String(req.headers["x-asema-key"] || "").trim();
-  const esperada = String(process.env.ASEMA_PASSWORD || "").trim();
+  const clave = limpiaSecreto(req.headers["x-asema-key"]);
+  const esperada = limpiaSecreto(process.env.ASEMA_PASSWORD);
   if (!esperada) {
     return res.status(500).json({ error: "El servidor no tiene configurada la variable ASEMA_PASSWORD" });
   }
@@ -75,7 +80,7 @@ export default async function handler(req, res) {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "x-api-key": limpiaSecreto(process.env.ANTHROPIC_API_KEY),
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
