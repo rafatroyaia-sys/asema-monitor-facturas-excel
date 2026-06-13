@@ -59,6 +59,20 @@ const CUENTAS = [
   { n: 14, t: "PAGOS" },
 ];
 
+/* ---------- Letra de cuenta que valida Monitor en la importación ----------
+   Monitor NO admite el número de cuenta en el Excel, sino una letra:
+   V=Ventas, C=Compras, E=Energía, A=Alquileres, G=Gastos (resto).
+   Internamente seguimos usando los números (más cómodos para revisar y
+   para el resumen), y solo traducimos a letra al exportar. */
+const cuentaLetra = (n) => {
+  const c = Number(n);
+  if (c === 1) return "V";   // VENTAS (emitidas)
+  if (c === 2) return "C";   // COMPRAS
+  if (c === 5) return "E";   // ENERGÍA
+  if (c === 6) return "A";   // ALQUILERES
+  return "G";                // GASTOS (10 gastos div., 8 primas seg., y resto)
+};
+
 /* ---------- Concepto del apunte (campo "Concepto" de Monitor) ---------- */
 const conceptoPorCuenta = (n) => {
   const c = Number(n);
@@ -475,7 +489,7 @@ export default function App() {
     orden.forEach((r) => {
       aoa.push([
         r.contraparte, r.nif, r.numero, r.fecha,
-        num(r.base), num(r.cuotaIva), num(r.total), num(r.tipoIva), Number(r.cuenta),
+        num(r.base), num(r.cuotaIva), num(r.total), num(r.tipoIva), cuentaLetra(r.cuenta),
         r.concepto || conceptoPorCuenta(r.cuenta),
         Number(r.cuenta) === 10 ? r.clave : "",
         num(r.tipoRet) || 0, num(r.cuotaRet) || 0, num(r.tipoRe) || 0, num(r.cuotaRe) || 0,
@@ -899,7 +913,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v1.1 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v1.2 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
