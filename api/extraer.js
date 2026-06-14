@@ -65,9 +65,13 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "El servidor no tiene configurada la variable ANTHROPIC_API_KEY" });
   }
 
-  const { media_type, data, empresa } = req.body || {};
-  if (!data || !media_type || !empresa || !empresa.nombre || !empresa.nif) {
-    return res.status(400).json({ error: "Faltan datos: archivo o cliente del despacho" });
+  const { media_type, data, empresa, promptOverride } = req.body || {};
+  if (!data || !media_type) {
+    return res.status(400).json({ error: "Faltan datos: archivo" });
+  }
+  // Si no hay prompt alternativo (listados), se exige el cliente del despacho.
+  if (!promptOverride && (!empresa || !empresa.nombre || !empresa.nif)) {
+    return res.status(400).json({ error: "Faltan datos: cliente del despacho" });
   }
 
   const bloque =
@@ -86,7 +90,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 4000,
-        messages: [{ role: "user", content: [bloque, { type: "text", text: buildPrompt(empresa) }] }],
+        messages: [{ role: "user", content: [bloque, { type: "text", text: promptOverride || buildPrompt(empresa) }] }],
       }),
     });
 

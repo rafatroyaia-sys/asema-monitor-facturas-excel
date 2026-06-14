@@ -210,6 +210,42 @@ async function extraerFacturas(file, empresa, claveDespacho) {
   return data.facturas;
 }
 
+/* ---------- Listado PDF (Aaron) por IA → filas de la tabla ---------- */
+async function extraerListadoPDF(file, claveDespacho) {
+  const b64 = await toB64(file);
+  const resp = await fetch("/api/extraer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-asema-key": limpiaClave(claveDespacho) },
+    body: JSON.stringify({ media_type: "application/pdf", data: b64, promptOverride: promptListadoPDF }),
+  });
+  let data = {};
+  try { data = await resp.json(); } catch { /* sin cuerpo */ }
+  if (resp.status === 401) { const e = new Error(data.error || "Clave del despacho incorrecta"); e.auth = true; throw e; }
+  if (!resp.ok) throw new Error(data.error || `Error del servidor (HTTP ${resp.status})`);
+  if (!Array.isArray(data.facturas)) throw new Error("Respuesta inesperada del servidor.");
+  return data.facturas;
+}
+
+/* Convierte las líneas del listado PDF en filas de la tabla */
+function listadoPDFARows(items) {
+  return items.map((f) => {
+    const cuenta = f.sentido === "compra" ? 2 : 1;
+    const base = num(f.base);
+    const iva = num(f.cuota_iva);
+    const re = num(f.recargo) || 0;
+    let total = num(f.total);
+    if (!isFinite(total)) total = r2((isFinite(base) ? base : 0) + (isFinite(iva) ? iva : 0) + re);
+    return filaListado({
+      contraparte: String(f.contraparte || "").toUpperCase().trim(),
+      nif: limpiaNif(f.nif),
+      numero: String(f.numero ?? "").trim(),
+      fecha: normFecha(f.fecha),
+      base, tipoIva: f.tipo_iva ?? 10, cuotaIva: iva, total, cuenta,
+      fileName: "Listado PDF (Aaron)",
+    });
+  });
+}
+
 /* ---------- Facturas extraídas → filas de la tabla ---------- */
 function facturasARows(facturas, fileName) {
   const rows = [];
@@ -287,6 +323,239 @@ function validarFila(row, rows) {
 }
 
 /* ============================================================ */
+
+/* ============================================================
+   PLANTILLAS FIJAS para listados Excel/PDF de clientes concretos.
+   No usan IA: leen columnas en posiciones fijas → exactas y gratis.
+   Cada plantilla devuelve filas en el formato de la tabla de revisión.
+   ============================================================ */
+
+/* Convierte un número de serie de fecha de Excel a dd/mm/aaaa */
+const excelFechaANum = (v) => {
+  if (v == null || v === "") return "";
+  if (typeof v === "string") return normFecha(v);
+  if (v instanceof Date) {
+    const dd = String(v.getDate()).padStart(2, "0");
+    const mm = String(v.getMonth() + 1).padStart(2, "0");
+    return `${dd}/${mm}/${v.getFullYear()}`;
+  }
+  if (typeof v === "number") {
+    // Serie de Excel: día 0 = 30/12/1899
+    const ms = Math.round((v - 25569) * 86400 * 1000);
+    const d = new Date(ms);
+    if (isNaN(d.getTime())) return "";
+    const dd = String(d.getUTCDate()).padStart(2, "0");
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    return `${dd}/${mm}/${d.getUTCFullYear()}`;
+  }
+  return "";
+};
+
+/* Devuelve el trimestre (1-4) de una fecha dd/mm/aaaa, o 0 si no es válida */
+const trimestreDeFecha = (fechaStr) => {
+  const m = String(fechaStr || "").match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!m) return 0;
+  const mes = parseInt(m[2], 10);
+  return Math.floor((mes - 1) / 3) + 1;
+};
+
+const limpiaNif = (v) => {
+  let s = String(v ?? "").toUpperCase().replace(/[\s\-\.\/]/g, "");
+  // Prefijo de IVA intracomunitario español: ES + NIF
+  if (/^ES[0-9A-Z]/.test(s)) s = s.slice(2);
+  return s || "0";
+};
+
+/* Lee un File (xlsx/xls) y devuelve la primera hoja como matriz de filas */
+async function leerHojaExcel(file) {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array", cellDates: true });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" });
+}
+
+/* Plantilla VENTAS Aaron - Serie Principal 001
+   Datos desde fila 8 (índice 7). B=nº(1) C=fecha(2) D=NIF(3) E=nombre(4)
+   L=base(11) M=iva(12) N=total(13) */
+function parseVentasSerie001(rows) {
+  const out = [];
+  for (let i = 7; i < rows.length; i++) {
+    const r = rows[i];
+    const numero = String(r[1] ?? "").trim();
+    const nombre = String(r[4] ?? "").trim();
+    const base = num(r[11]);
+    if (!nombre || !numero || !isFinite(base)) continue;
+    const iva = num(r[12]);
+    const total = num(r[13]);
+    const tipo = isFinite(base) && base !== 0 && isFinite(iva) ? Math.round((iva / base) * 100) : 21;
+    out.push(filaListado({
+      contraparte: nombre.toUpperCase(), nif: limpiaNif(r[3]), numero,
+      fecha: excelFechaANum(r[2]), base, tipoIva: tipo, cuotaIva: iva, total,
+      cuenta: 1, fileName: "Ventas Serie 001",
+    }));
+  }
+  return out;
+}
+
+/* Plantilla VENTAS Aaron - TPV Serie 002
+   Datos desde fila 8. B=nº(1) C=fecha(2) D=nombre(3) E=NIF(4)
+   G=base(6) H=iva(7) I=total(8) */
+function parseVentasTPV002(rows) {
+  const out = [];
+  for (let i = 7; i < rows.length; i++) {
+    const r = rows[i];
+    const numero = String(r[1] ?? "").trim();
+    const nombre = String(r[3] ?? "").trim();
+    const base = num(r[6]);
+    if (!nombre || !numero || !isFinite(base)) continue;
+    const iva = num(r[7]);
+    const total = num(r[8]);
+    const tipo = isFinite(base) && base !== 0 && isFinite(iva) ? Math.round((iva / base) * 100) : 21;
+    out.push(filaListado({
+      contraparte: nombre.toUpperCase(), nif: limpiaNif(r[4]), numero,
+      fecha: excelFechaANum(r[2]), base, tipoIva: tipo, cuotaIva: iva, total,
+      cuenta: 1, fileName: "Ventas TPV 002",
+    }));
+  }
+  return out;
+}
+
+/* Plantilla PROVEEDORES Ferretería (.xls)
+   Datos desde fila 8. D=fecha(3) E=código(4) G=proveedor(6) H=CIF(7)
+   Hasta 4 tramos IVA: (base,%,iva) en col 10/_/9, 11/12/13, 15/16/17, 19/20/21
+   Globales: W=base(23) X=iva(24) AA=total(26).
+   Si hay un solo tramo → 1 fila; si hay varios → 1 fila por tramo. */
+function parseProveedoresFerreteria(rows) {
+  const out = [];
+  for (let i = 8; i < rows.length; i++) {
+    const r = rows[i];
+    const cod = String(r[4] ?? "").trim();
+    const prov = String(r[6] ?? "").trim();
+    const baseG = num(r[23]);
+    if (!prov || !cod || !isFinite(baseG)) continue;
+    const nif = limpiaNif(r[7]);
+    const fecha = excelFechaANum(r[3]);
+    // Detectar tramos rellenos: pares (base, iva)
+    const tramos = [];
+    const pares = [[10, 9], [11, 13], [15, 17], [19, 21]]; // [colBase, colIva]
+    for (const [cb, ci] of pares) {
+      const b = num(r[cb]); const q = num(r[ci]);
+      if (isFinite(b) && b !== 0) tramos.push({ base: b, iva: isFinite(q) ? q : 0 });
+    }
+    if (tramos.length === 0) {
+      // Sin tramos detallados: usar base/iva globales
+      const ivaG = num(r[24]);
+      const totalG = num(r[26]);
+      const tipo = baseG !== 0 && isFinite(ivaG) ? Math.round((ivaG / baseG) * 100) : 21;
+      out.push(filaListado({
+        contraparte: prov.toUpperCase(), nif, numero: cod, fecha,
+        base: baseG, tipoIva: tipo, cuotaIva: ivaG, total: totalG,
+        cuenta: 2, fileName: "Proveedores Ferretería",
+      }));
+    } else {
+      const invoiceId = uid();
+      tramos.forEach((t) => {
+        const tipo = t.base !== 0 && isFinite(t.iva) ? Math.round((t.iva / t.base) * 100) : 21;
+        out.push(filaListado({
+          contraparte: prov.toUpperCase(), nif, numero: cod, fecha,
+          base: t.base, tipoIva: tipo, cuotaIva: t.iva, total: r2(t.base + t.iva),
+          cuenta: 2, fileName: "Proveedores Ferretería", invoiceId,
+        }));
+      });
+    }
+  }
+  return out;
+}
+
+/* Plantilla VENTAS Aaron — por CABECERA (robusta al orden de columnas).
+   Localiza las columnas por su nombre (CLIENTE, FACTURA, FECHA, BASE, IVA,
+   R.E, IMPORTE, CIF) en lugar de por posición fija: así, aunque Aaron cambie
+   el orden de las columnas entre meses, las encuentra igual.
+   Tipo de IVA calculado de base/IVA. Cuenta V (ventas). Abonos negativos tal cual. */
+function parseVentasAaronCabecera(rows) {
+  // Buscar la fila de cabecera: la que contiene "FACTURA" y "BASE"
+  let h = -1;
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const celdas = (rows[i] || []).map((c) => String(c ?? "").trim().toUpperCase());
+    if (celdas.includes("FACTURA") && celdas.includes("BASE")) { h = i; break; }
+  }
+  if (h === -1) return [];
+  const head = (rows[h] || []).map((c) => String(c ?? "").trim().toUpperCase());
+  // Localizar índice de cada columna por palabra clave (tolerante a variaciones)
+  const col = (claves) => head.findIndex((c) => claves.some((k) => c.includes(k)));
+  const iCli = col(["CLIENTE", "NOMBRE", "RAZON"]);
+  const iFac = col(["FACTURA"]);
+  const iFec = col(["FECHA"]);
+  const iBase = head.findIndex((c) => c === "BASE" || c.startsWith("BASE"));
+  const iIva = head.findIndex((c) => c === "IVA" || c.startsWith("IVA"));
+  const iImp = col(["IMPORTE", "TOTAL"]);
+  const iNif = col(["CIF", "NIF", "DNI"]);
+  const out = [];
+  for (let i = h + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const nombre = String(r[iCli] ?? "").trim();
+    const numero = String(r[iFac] ?? "").trim();
+    const base = num(r[iBase]);
+    if (!nombre || !numero || !isFinite(base)) continue;
+    // Saltar fila de totales (suele no tener nº de factura válido, ya filtrado)
+    const iva = num(r[iIva]);
+    const total = iImp >= 0 ? num(r[iImp]) : NaN;
+    const tipo = isFinite(base) && base !== 0 && isFinite(iva) ? Math.round((iva / base) * 100) : 10;
+    out.push(filaListado({
+      contraparte: nombre.toUpperCase(),
+      nif: limpiaNif(iNif >= 0 ? r[iNif] : ""),
+      numero,
+      fecha: excelFechaANum(r[iFec]),
+      base, tipoIva: tipo, cuotaIva: iva,
+      total: isFinite(total) ? total : r2(base + (isFinite(iva) ? iva : 0)),
+      cuenta: 1, fileName: "Ventas Aaron",
+    }));
+  }
+  return out;
+}
+
+/* Construye una fila de la tabla de revisión a partir de datos de listado */
+function filaListado({ contraparte, nif, numero, fecha, base, tipoIva, cuotaIva, total, cuenta, fileName, invoiceId }) {
+  return {
+    id: uid(), invoiceId: invoiceId || uid(), fileName,
+    contraparte, nif, numero, fecha,
+    base: toInput(base), tipoIva: toInputPct(tipoIva), cuotaIva: toInput(cuotaIva),
+    tipoRe: "0", cuotaRe: "0,00", tipoRet: "0", cuotaRet: "0,00",
+    total: toInput(total), cuenta, concepto: conceptoPorCuenta(cuenta),
+    clave: "", confianza: "alta", obs: "",
+  };
+}
+
+/* ---------- Prompt para PDF de LISTADO (doble columna ventas/compras) ---------- */
+const promptListadoPDF = `Eres el sistema de extracción contable de una asesoría española. El documento adjunto es un LISTADO mensual de contabilidad con DOS bloques en la misma página:
+- IZQUIERDA: VENTAS A CLIENTES (columnas: CLIENTE, FACTURA, FECHA, BASE, IVA, R.E, IMPORTE, ESTADO).
+- DERECHA: COMPRAS A PROVEEDORES (columnas: FECHA ALBARÁN, FECHA, PROVEEDOR, FACTURA, BASE, IVA, IMPORTE).
+Las dos tablas están alineadas lado a lado pero son INDEPENDIENTES: cada fila de ventas no tiene relación con la fila de compras a su derecha.
+
+Devuelve EXCLUSIVAMENTE un objeto JSON válido, sin markdown ni texto alrededor:
+{"facturas":[{"contraparte":"NOMBRE","nif":"0","numero":"25030001","fecha":"01/03/2025","base":666.10,"tipo_iva":10,"cuota_iva":66.61,"recargo":0,"total":732.71,"sentido":"venta"}]}
+
+REGLAS:
+- Una entrada por cada línea de venta (sentido:"venta") y una por cada línea de compra (sentido:"compra").
+- Ignora filas de cabecera, subtotales y la fila de TOTALES del final.
+- Importes con punto decimal y 2 decimales. Si el número usa coma decimal en el documento (666,10), conviértelo a punto (666.10).
+- "nif": estos listados normalmente NO traen NIF. Si no aparece, pon "0". Si en alguna fila SÍ hay un NIF/CIF/DNI, ponlo en mayúsculas, sin espacios, guiones ni puntos, y sin el prefijo ES.
+- "numero": el número de factura tal cual (en ventas suele ser tipo 25030001).
+- "fecha": dd/mm/aaaa.
+- "tipo_iva": calcúlalo de base e IVA (suele ser 10 en cárnicas). "recargo": el R.E si lo hay, si no 0.
+- Las líneas de ABONO o importes negativos: respétalos con su signo negativo.
+- "total": el importe total de esa línea.
+Sé exhaustivo: extrae TODAS las líneas de ambas columnas, de todas las páginas.`;
+
+const PLANTILLAS = [
+  { id: "ventas001", nombre: "Excel · Ferretería El Paso — Ventas Serie 001 (comercio mayor)", tipo: "excel", trimestral: true, fn: parseVentasSerie001 },
+  { id: "ventasTPV", nombre: "Excel · Ferretería El Paso — Ventas Serie 002 (TPV tienda)", tipo: "excel", trimestral: true, fn: parseVentasTPV002 },
+  { id: "provFerre", nombre: "Excel · Ferretería El Paso — Proveedores (compras)", tipo: "excel", trimestral: true, fn: parseProveedoresFerreteria },
+  { id: "ventasAaron", nombre: "Excel · Aaron — Ingresos (detecta columnas por cabecera)", tipo: "excel", fn: parseVentasAaronCabecera },
+  { id: "pdfAaron", nombre: "PDF · Listado mensual ventas+compras (red de seguridad)", tipo: "pdf" },
+];
+
+
 export default function App() {
   const [claveDespacho, setClaveDespacho] = useState(() => {
     try { return limpiaClave(localStorage.getItem("asema_clave")); } catch { return ""; }
@@ -297,6 +566,10 @@ export default function App() {
   const [claveInput, setClaveInput] = useState("");
   const [avisoClave, setAvisoClave] = useState("");
 
+  const [modo, setModo] = useState("facturas"); // "facturas" | "listados"
+  const [plantillaSel, setPlantillaSel] = useState("ventas001");
+  const [trimestreSel, setTrimestreSel] = useState(1);
+  const [listadoMsg, setListadoMsg] = useState("");
   const [empresa, setEmpresa] = useState({ nombre: "", nif: "" });
   const [periodo, setPeriodo] = useState("");
   const [guardadas, setGuardadas] = useState([]);
@@ -439,6 +712,56 @@ export default function App() {
         cuenta: 10, concepto: "GASTOS VARIOS", clave: "", confianza: "alta", obs: "",
       },
     ]);
+
+  /* ----- Importación de listados Excel (plantillas fijas) ----- */
+  const importarListado = async (file) => {
+    if (!file) return;
+    const plantilla = PLANTILLAS.find((p) => p.id === plantillaSel);
+    if (!plantilla) return;
+    try {
+      if (plantilla.tipo === "pdf") {
+        // Listado PDF (Aaron) por IA: requiere la clave del despacho
+        const esPdf = /\.pdf$/i.test(file.name);
+        if (!esPdf) { setListadoMsg("Esta plantilla espera un archivo PDF."); return; }
+        if (file.size > MAX_MB * 1024 * 1024) { setListadoMsg(`El PDF supera los ${MAX_MB} MB. Divídelo o reduce su tamaño.`); return; }
+        setListadoMsg("Leyendo el listado PDF con IA… (puede tardar unos segundos)");
+        const items = await extraerListadoPDF(file, claveDespacho);
+        const nuevas = listadoPDFARows(items);
+        if (!nuevas.length) { setListadoMsg("La IA no encontró líneas en el PDF. Revisa el documento."); return; }
+        setRows((p) => [...p, ...nuevas]);
+        const nv = nuevas.filter((r) => Number(r.cuenta) === 1).length;
+        const nc = nuevas.length - nv;
+        setListadoMsg(`Importadas ${nuevas.length} líneas del PDF (${nv} ventas, ${nc} compras). Revísalas abajo antes de exportar.`);
+        return;
+      }
+      // Plantilla Excel (sin IA)
+      const esExcel = /\.(xlsx|xls)$/i.test(file.name);
+      if (!esExcel) { setListadoMsg("Esta plantilla espera un archivo Excel (.xlsx/.xls)."); return; }
+      setListadoMsg("Leyendo archivo Excel…");
+      const filas = await leerHojaExcel(file);
+      let nuevas = plantilla.fn(filas);
+      if (!nuevas.length) { setListadoMsg("No se han encontrado filas válidas. ¿Es la plantilla correcta para este archivo?"); return; }
+      // Filtro por trimestre para clientes que acumulan todo el año (Ferretería)
+      if (plantilla.trimestral) {
+        const total = nuevas.length;
+        const sinFecha = nuevas.filter((r) => trimestreDeFecha(r.fecha) === 0).length;
+        nuevas = nuevas.filter((r) => trimestreDeFecha(r.fecha) === Number(trimestreSel));
+        if (!nuevas.length) {
+          setListadoMsg(`El archivo trae ${total} líneas, pero ninguna del ${trimestreSel}º trimestre. ¿Has elegido el trimestre correcto?`);
+          return;
+        }
+        setRows((p) => [...p, ...nuevas]);
+        const aviso = sinFecha > 0 ? ` (${sinFecha} líneas sin fecha válida quedaron fuera del filtro)` : "";
+        setListadoMsg(`Importadas ${nuevas.length} líneas del ${trimestreSel}º trimestre (de ${total} totales en el archivo)${aviso}. Revísalas abajo antes de exportar.`);
+        return;
+      }
+      setRows((p) => [...p, ...nuevas]);
+      setListadoMsg(`Importadas ${nuevas.length} líneas desde "${file.name}". Revísalas abajo antes de exportar.`);
+    } catch (e) {
+      if (e.auth) { setListadoMsg("Clave del despacho incorrecta para procesar el PDF con IA."); return; }
+      setListadoMsg("Error al procesar el archivo: " + (e.message || "desconocido"));
+    }
+  };
 
   /* ----- Validación y resumen ----- */
   const issuesById = useMemo(() => {
@@ -610,6 +933,25 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-6 py-6 flex flex-col gap-6">
 
+        {/* ---------- Selector de modo ---------- */}
+        <div style={{ display: "flex", gap: 8 }}>
+          {[["facturas", "Facturas escaneadas (IA)"], ["listados", "Listados Excel (clientes)"]].map(([id, txt]) => (
+            <button
+              key={id}
+              onClick={() => setModo(id)}
+              style={{
+                padding: "9px 18px", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer",
+                border: `1.5px solid ${C.vino}`,
+                background: modo === id ? C.vino : "transparent",
+                color: modo === id ? C.crema : C.vino,
+              }}
+            >
+              {txt}
+            </button>
+          ))}
+        </div>
+
+
         {/* ---------- 1 · Cliente ---------- */}
         <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
           <div className="flex items-center gap-2 mb-4">
@@ -671,7 +1013,8 @@ export default function App() {
           )}
         </section>
 
-        {/* ---------- 2 · Facturas ---------- */}
+        {/* ---------- 2 · Facturas (solo modo facturas) ---------- */}
+        {modo === "facturas" && (
         <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
           <div className="flex items-center gap-2 mb-4">
             <Upload size={18} style={{ color: C.vino }} />
@@ -744,7 +1087,61 @@ export default function App() {
           </div>
         </section>
 
-        {/* ---------- 3 · Revisión ---------- */}
+)}
+
+        {/* ---------- 2b · Listados Excel (solo modo listados) ---------- */}
+        {modo === "listados" && (
+        <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
+          <div className="flex items-center gap-2 mb-4">
+            <FileSpreadsheet size={18} style={{ color: C.vino }} />
+            <h2 style={{ fontSize: 15, fontWeight: 800, letterSpacing: "0.04em" }}>2 · LISTADO EXCEL DEL CLIENTE</h2>
+            <span style={{ fontSize: 12, color: C.gris }}>— para clientes que envían su contabilidad ya en Excel, no facturas sueltas</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end mb-4">
+            <div className={(PLANTILLAS.find((p) => p.id === plantillaSel) || {}).trimestral ? "md:col-span-5" : "md:col-span-7"}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.gris, letterSpacing: "0.05em" }}>PLANTILLA (formato del archivo)</label>
+              <select style={{ ...inputBase, fontWeight: 600 }} value={plantillaSel} onChange={(e) => setPlantillaSel(e.target.value)}>
+                {PLANTILLAS.map((p) => (<option key={p.id} value={p.id}>{p.nombre}</option>))}
+              </select>
+            </div>
+            {(PLANTILLAS.find((p) => p.id === plantillaSel) || {}).trimestral && (
+              <div className="md:col-span-2">
+                <label style={{ fontSize: 11, fontWeight: 700, color: C.vino, letterSpacing: "0.05em" }}>TRIMESTRE A IMPORTAR</label>
+                <select style={{ ...inputBase, fontWeight: 700, borderColor: C.vino }} value={trimestreSel} onChange={(e) => setTrimestreSel(Number(e.target.value))}>
+                  <option value={1}>1T · ene-mar</option>
+                  <option value={2}>2T · abr-jun</option>
+                  <option value={3}>3T · jul-sep</option>
+                  <option value={4}>4T · oct-dic</option>
+                </select>
+              </div>
+            )}
+            <div className={(PLANTILLAS.find((p) => p.id === plantillaSel) || {}).trimestral ? "md:col-span-5" : "md:col-span-5"}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.gris, letterSpacing: "0.05em", display: "block" }}>
+                {(PLANTILLAS.find((p) => p.id === plantillaSel) || {}).tipo === "pdf" ? "ARCHIVO PDF" : "ARCHIVO EXCEL (.xlsx / .xls)"}
+              </label>
+              <input
+                type="file"
+                accept={(PLANTILLAS.find((p) => p.id === plantillaSel) || {}).tipo === "pdf" ? ".pdf" : ".xlsx,.xls"}
+                onChange={(e) => { importarListado(e.target.files[0]); e.target.value = ""; }}
+                style={{ ...inputBase, padding: "5px 8px", cursor: "pointer" }}
+              />
+            </div>
+          </div>
+
+          {listadoMsg && (
+            <div style={{ padding: "10px 14px", borderRadius: 8, background: C.crema, color: C.tinta, fontSize: 13, display: "flex", gap: 8, alignItems: "center" }}>
+              <FileText size={16} style={{ color: C.vino }} /> {listadoMsg}
+            </div>
+          )}
+
+          <div style={{ marginTop: 14, fontSize: 12, color: C.gris, lineHeight: 1.6 }}>
+            Para Ferretería El Paso (que acumula todo el año en el mismo archivo), elige el <b>trimestre a importar</b>: solo se normalizan las líneas con fecha de ese trimestre. Para Aaron no aparece esa opción porque ya envía cada trimestre por separado. Las ventas se asignan a la cuenta <b>V</b> y las compras a la cuenta <b>C</b>. Los abonos (importes negativos) se respetan con su signo; las facturas con varios tipos de IVA se separan en una línea por tipo. El NIF se normaliza solo (quita ES, guiones y puntos). El listado PDF de Aaron se lee con IA (extrae ventas y compras en una pasada) y, como aún no trae NIF, esas líneas saldrán con NIF 0 y aviso ámbar: es normal. Revisa siempre el resultado antes de exportar.
+          </div>
+        </section>
+        )}
+
+                {/* ---------- 3 · Revisión ---------- */}
         {rows.length > 0 && (
           <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
             <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -913,7 +1310,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v1.2 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v1.7 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
