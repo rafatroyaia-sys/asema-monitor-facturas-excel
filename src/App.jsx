@@ -796,6 +796,11 @@ export default function App() {
   /* ----- Exportación a Excel para Monitor ----- */
   const exportar = () => {
     if (!rows.length) return;
+    if (modo === "facturas" && (!empresa.nombre || !empresa.nombre.trim())) {
+      setAviso("Antes de exportar, rellena el nombre del cliente del despacho (arriba). Es obligatorio para identificar el archivo.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
     const orden = [...rows].sort((a, b) => {
       const c = Number(a.cuenta) - Number(b.cuenta);
       if (c !== 0) return c;
@@ -835,7 +840,10 @@ export default function App() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "FACTURAS");
     const limpio = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
-    const nombre = `MONITOR_${limpio(empresa.nombre) || "CLIENTE"}${periodo ? "_" + limpio(periodo) : ""}.xlsx`;
+    const ahora = new Date();
+    const sello = `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, "0")}-${String(ahora.getDate()).padStart(2, "0")}_${String(ahora.getHours()).padStart(2, "0")}${String(ahora.getMinutes()).padStart(2, "0")}`;
+    const cli = limpio(empresa.nombre) || "CLIENTE";
+    const nombre = `MONITOR_${cli}${periodo ? "_" + limpio(periodo) : ""}_${sello}.xlsx`;
     XLSX.writeFile(wb, nombre);
   };
 
@@ -1136,7 +1144,7 @@ export default function App() {
           )}
 
           <div style={{ marginTop: 14, fontSize: 12, color: C.gris, lineHeight: 1.6 }}>
-            Para Ferretería El Paso (que acumula todo el año en el mismo archivo), elige el <b>trimestre a importar</b>: solo se normalizan las líneas con fecha de ese trimestre. Para Aaron no aparece esa opción porque ya envía cada trimestre por separado. Las ventas se asignan a la cuenta <b>V</b> y las compras a la cuenta <b>C</b>. Los abonos (importes negativos) se respetan con su signo; las facturas con varios tipos de IVA se separan en una línea por tipo. El NIF se normaliza solo (quita ES, guiones y puntos). El listado PDF de Aaron se lee con IA (extrae ventas y compras en una pasada) y, como aún no trae NIF, esas líneas saldrán con NIF 0 y aviso ámbar: es normal. Revisa siempre el resultado antes de exportar.
+            Para Ferretería El Paso (que acumula todo el año en el mismo archivo), elige el <b>trimestre a importar</b>: solo se normalizan las líneas con fecha de ese trimestre. Para Aaron no aparece esa opción porque ya envía cada trimestre por separado. Las ventas se asignan a la cuenta <b>V</b> y las compras a la cuenta <b>C</b>. Los abonos (importes negativos) se respetan con su signo; las facturas con varios tipos de IVA se separan en una línea por tipo. El NIF se normaliza solo (quita ES, guiones y puntos). El listado PDF de Aaron se lee con IA (extrae ventas y compras en una pasada) y, como aún no trae NIF, esas líneas saldrán con NIF 0 y aviso ámbar: es normal. Revisa siempre el resultado antes de exportar. Consejo: rellena arriba el nombre del cliente para que el Excel se descargue con su nombre y la fecha, no como "CLIENTE".
           </div>
         </section>
         )}
@@ -1310,7 +1318,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v1.7 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v1.8 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
