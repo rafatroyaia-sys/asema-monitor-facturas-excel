@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import * as XLSX from "xlsx";
+import mammoth from "mammoth";
 import {
   Upload, FileText, Trash2, Download, Calculator, AlertTriangle,
   CheckCircle2, XCircle, Loader2, Building2, Save, Plus, FileSpreadsheet,
@@ -205,6 +206,36 @@ async function extraerFacturas(file, empresa, claveDespacho) {
     e.auth = true;
     throw e;
   }
+  if (!resp.ok) throw new Error(data.error || `Error del servidor (HTTP ${resp.status})`);
+  if (!Array.isArray(data.facturas)) throw new Error("Respuesta inesperada del servidor.");
+  return data.facturas;
+}
+
+/* ---------- Factura en Word (.docx/.doc) → texto → IA ---------- */
+async function extraerFacturaWord(file, empresa, claveDespacho) {
+  const esDoc = /\.doc$/i.test(file.name);
+  let texto = "";
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const result = await mammoth.extractRawText({ arrayBuffer });
+    texto = (result && result.value ? result.value : "").trim();
+  } catch (e) {
+    texto = "";
+  }
+  if (!texto || texto.length < 15) {
+    if (esDoc) {
+      throw new Error("No se pudo leer este .doc antiguo. Ábrelo en Word y usa «Guardar como → Word (.docx)», y vuelve a subirlo.");
+    }
+    throw new Error("El Word no contiene texto legible (¿es una factura escaneada pegada como imagen? En ese caso, súbela como PDF o foto).");
+  }
+  const resp = await fetch("/api/extraer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-asema-key": limpiaClave(claveDespacho) },
+    body: JSON.stringify({ textoDocumento: texto, media_type: "text/plain", data: "x", empresa }),
+  });
+  let data = {};
+  try { data = await resp.json(); } catch { /* sin cuerpo */ }
+  if (resp.status === 401) { const e = new Error(data.error || "Clave del despacho incorrecta"); e.auth = true; throw e; }
   if (!resp.ok) throw new Error(data.error || `Error del servidor (HTTP ${resp.status})`);
   if (!Array.isArray(data.facturas)) throw new Error("Respuesta inesperada del servidor.");
   return data.facturas;
@@ -617,7 +648,7 @@ export default function App() {
   const addFiles = (lista) => {
     const nuevos = [];
     Array.from(lista).forEach((f) => {
-      const okTipo = f.type === "application/pdf" || /^image\/(jpeg|png|webp)$/.test(f.type) || /\.(pdf|jpe?g|png|webp)$/i.test(f.name);
+      const okTipo = f.type === "application/pdf" || /^image\/(jpeg|png|webp)$/.test(f.type) || /\.(pdf|jpe?g|png|webp|docx|doc)$/i.test(f.name);
       if (!okTipo) return;
       const grande = f.size > MAX_MB * 1024 * 1024;
       const id = uid();
@@ -650,7 +681,10 @@ export default function App() {
       if (!obj || obj.size > MAX_MB * 1024 * 1024) continue;
       setFile(f.id, { status: "procesando", msg: "" });
       try {
-        const facturas = await extraerFacturas(obj, empresa, claveDespacho);
+        const esWord = /\.(docx|doc)$/i.test(obj.name);
+        const facturas = esWord
+          ? await extraerFacturaWord(obj, empresa, claveDespacho)
+          : await extraerFacturas(obj, empresa, claveDespacho);
         const nuevas = facturasARows(facturas, f.name);
         setRows((p) => [...p, ...nuevas]);
         setFile(f.id, { status: "ok", nFacturas: facturas.length, msg: "" });
@@ -1048,7 +1082,7 @@ export default function App() {
               ref={inputRef}
               type="file"
               multiple
-              accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp"
+              accept=".pdf,.jpg,.jpeg,.png,.webp,.docx,.doc,application/pdf,image/jpeg,image/png,image/webp,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
               style={{ display: "none" }}
               onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
             />
@@ -1318,7 +1352,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v1.8 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v1.9 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>

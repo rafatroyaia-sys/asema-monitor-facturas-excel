@@ -65,8 +65,9 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "El servidor no tiene configurada la variable ANTHROPIC_API_KEY" });
   }
 
-  const { media_type, data, empresa, promptOverride } = req.body || {};
-  if (!data || !media_type) {
+  const { media_type, data, empresa, promptOverride, textoDocumento } = req.body || {};
+  // Debe venir un documento (archivo en base64) o el texto de un Word ya extraído.
+  if (!textoDocumento && (!data || !media_type)) {
     return res.status(400).json({ error: "Faltan datos: archivo" });
   }
   // Si no hay prompt alternativo (listados), se exige el cliente del despacho.
@@ -74,10 +75,15 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Faltan datos: cliente del despacho" });
   }
 
-  const bloque =
-    media_type === "application/pdf"
-      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data } }
-      : { type: "image", source: { type: "base64", media_type, data } };
+  // Bloque de contenido: texto (Word), PDF, o imagen.
+  let bloque;
+  if (textoDocumento) {
+    bloque = { type: "text", text: "CONTENIDO DEL DOCUMENTO WORD (factura en texto):\n\n" + String(textoDocumento).slice(0, 60000) };
+  } else if (media_type === "application/pdf") {
+    bloque = { type: "document", source: { type: "base64", media_type: "application/pdf", data } };
+  } else {
+    bloque = { type: "image", source: { type: "base64", media_type, data } };
+  }
 
   try {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
