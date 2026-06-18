@@ -74,12 +74,12 @@ const cuentaLetra = (n) => {
   return "G";                // GASTOS (10 gastos div., 8 primas seg., y resto)
 };
 
-/* ---------- Concepto del apunte (campo "Concepto" de Monitor) ---------- */
+/* ---------- Concepto del apunte (campo "Concepto" de Monitor) ----------
+   El concepto debe COINCIDIR con el nombre de la cuenta: cuenta 1 → VENTAS,
+   cuenta 2 → COMPRAS, etc. (sin "ingresos por" ni "gastos de"). */
 const conceptoPorCuenta = (n) => {
-  const c = Number(n);
-  if (c === 1) return "INGRESOS POR VENTAS";
-  if (c === 2) return "GASTOS DE COMPRAS";
-  return "GASTOS VARIOS";
+  const c = CUENTAS.find((x) => x.n === Number(n));
+  return c ? c.t : "GASTOS DIV.";
 };
 
 /* ---------- Claves de gastos diversos (cuenta 10) ---------- */
@@ -743,7 +743,7 @@ export default function App() {
         contraparte: "", nif: "0", numero: "", fecha: "",
         base: "", tipoIva: "21", cuotaIva: "", tipoRe: "0", cuotaRe: "0,00",
         tipoRet: "0", cuotaRet: "0,00", total: "",
-        cuenta: 10, concepto: "GASTOS VARIOS", clave: "", confianza: "alta", obs: "",
+        cuenta: 10, concepto: conceptoPorCuenta(10), clave: "", confianza: "alta", obs: "",
       },
     ]);
 
@@ -1352,7 +1352,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v1.9 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.0 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
