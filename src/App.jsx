@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import * as XLSX from "xlsx";
 import mammoth from "mammoth";
+import { PDFDocument } from "pdf-lib";
 import {
   Upload, FileText, Trash2, Download, Calculator, AlertTriangle,
   CheckCircle2, XCircle, Loader2, Building2, Save, Plus, FileSpreadsheet,
@@ -188,12 +189,8 @@ const toB64 = (file) =>
     r.readAsDataURL(file);
   });
 
-/* ---------- Llamada al backend del despacho ---------- */
-async function extraerFacturas(file, empresa, claveDespacho) {
-  const b64 = await toB64(file);
-  const esPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
-  const media = esPdf ? "application/pdf" : file.type || "image/jpeg";
-
+/* ---------- Llamada al backend con un bloque (base64) ---------- */
+async function pedirBloque(b64, media, empresa, claveDespacho) {
   const resp = await fetch("/api/extraer", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-asema-key": limpiaClave(claveDespacho) },
@@ -201,14 +198,72 @@ async function extraerFacturas(file, empresa, claveDespacho) {
   });
   let data = {};
   try { data = await resp.json(); } catch { /* respuesta sin cuerpo */ }
-  if (resp.status === 401) {
-    const e = new Error(data.error || "Clave del despacho incorrecta");
-    e.auth = true;
-    throw e;
-  }
+  if (resp.status === 401) { const e = new Error(data.error || "Clave del despacho incorrecta"); e.auth = true; throw e; }
   if (!resp.ok) throw new Error(data.error || `Error del servidor (HTTP ${resp.status})`);
   if (!Array.isArray(data.facturas)) throw new Error("Respuesta inesperada del servidor.");
   return data.facturas;
+}
+
+/* Convierte un ArrayBuffer (PDF) a base64 sin reventar la pila con archivos grandes */
+function abToB64(bytes) {
+  let bin = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+const PAGINAS_POR_BLOQUE = 8; // tamaño de cada lote al trocear PDFs grandes
+
+/* ---------- Extracción de facturas (trocea PDFs grandes por páginas) ----------
+   - Imagen o PDF de pocas páginas → una sola llamada.
+   - PDF con muchas páginas → se parte en bloques de PAGINAS_POR_BLOQUE,
+     se procesa cada bloque y se juntan los resultados. Sin límite práctico. */
+async function extraerFacturas(file, empresa, claveDespacho, onProgreso) {
+  const esPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+
+  if (!esPdf) {
+    const b64 = await toB64(file);
+    return pedirBloque(b64, file.type || "image/jpeg", empresa, claveDespacho);
+  }
+
+  // Cargar el PDF para contar páginas
+  const buf = await file.arrayBuffer();
+  let doc;
+  try {
+    doc = await PDFDocument.load(buf, { ignoreEncryption: true });
+  } catch {
+    // Si no se puede partir, intentar la vía clásica de una sola llamada
+    const b64 = await toB64(file);
+    return pedirBloque(b64, "application/pdf", empresa, claveDespacho);
+  }
+  const nPag = doc.getPageCount();
+
+  // PDF pequeño: una sola llamada
+  if (nPag <= PAGINAS_POR_BLOQUE) {
+    const b64 = await toB64(file);
+    return pedirBloque(b64, "application/pdf", empresa, claveDespacho);
+  }
+
+  // PDF grande: trocear en bloques de páginas
+  const todas = [];
+  const nBloques = Math.ceil(nPag / PAGINAS_POR_BLOQUE);
+  for (let b = 0; b < nBloques; b++) {
+    if (onProgreso) onProgreso(b + 1, nBloques);
+    const sub = await PDFDocument.create();
+    const ini = b * PAGINAS_POR_BLOQUE;
+    const fin = Math.min(ini + PAGINAS_POR_BLOQUE, nPag);
+    const indices = [];
+    for (let p = ini; p < fin; p++) indices.push(p);
+    const paginas = await sub.copyPages(doc, indices);
+    paginas.forEach((pg) => sub.addPage(pg));
+    const bytes = await sub.save();
+    const b64 = abToB64(bytes);
+    const facturas = await pedirBloque(b64, "application/pdf", empresa, claveDespacho);
+    todas.push(...facturas);
+  }
+  return todas;
 }
 
 /* ---------- Factura en Word (.docx/.doc) → texto → IA ---------- */
@@ -684,10 +739,10 @@ export default function App() {
         const esWord = /\.(docx|doc)$/i.test(obj.name);
         const facturas = esWord
           ? await extraerFacturaWord(obj, empresa, claveDespacho)
-          : await extraerFacturas(obj, empresa, claveDespacho);
+          : await extraerFacturas(obj, empresa, claveDespacho, (b, n) => setFile(f.id, { progreso: `bloque ${b}/${n}` }));
         const nuevas = facturasARows(facturas, f.name);
         setRows((p) => [...p, ...nuevas]);
-        setFile(f.id, { status: "ok", nFacturas: facturas.length, msg: "" });
+        setFile(f.id, { status: "ok", nFacturas: facturas.length, msg: "", progreso: "" });
       } catch (e) {
         setFile(f.id, { status: "error", msg: e.message || "Error desconocido" });
         if (e.auth) {
@@ -1097,7 +1152,7 @@ export default function App() {
                   <span style={{ fontSize: 11, color: C.gris, fontFamily: MONO }}>{(f.size / 1024 / 1024).toFixed(1)} MB</span>
                   {f.status === "ok" && <span style={{ fontSize: 12, color: C.ok, fontWeight: 700 }}>{f.nFacturas} factura{f.nFacturas !== 1 ? "s" : ""}</span>}
                   {f.status === "error" && <span style={{ fontSize: 12, color: C.err }}>{f.msg}</span>}
-                  {f.status === "procesando" && <span style={{ fontSize: 12, color: C.vino }}>leyendo…</span>}
+                  {f.status === "procesando" && <span style={{ fontSize: 12, color: C.vino }}>{f.progreso ? `leyendo ${f.progreso}…` : "leyendo…"}</span>}
                   {f.status !== "procesando" && (
                     <button onClick={() => quitarFile(f.id)} style={{ border: "none", background: "transparent", cursor: "pointer", color: C.gris, padding: 2 }} aria-label="Quitar archivo">
                       <Trash2 size={15} />
@@ -1352,7 +1407,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.0 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.1 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
