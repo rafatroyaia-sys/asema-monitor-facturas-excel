@@ -337,7 +337,7 @@ function listadoPDFARows(items) {
 }
 
 /* ---------- Facturas extraídas → filas de la tabla ---------- */
-function facturasARows(facturas, fileName) {
+function facturasARows(facturas, fileName, tri, anio) {
   const rows = [];
   facturas.forEach((f) => {
     const invoiceId = uid();
@@ -358,7 +358,7 @@ function facturasARows(facturas, fileName) {
         contraparte: (f.contraparte || "").toUpperCase().trim(),
         nif: (f.nif || "0").toUpperCase().replace(/[\s\-\.]/g, ""),
         numero: String(f.numero ?? "").trim(),
-        fecha: normFecha(f.fecha),
+        fecha: ajustaFechaATrimestre(f.fecha, tri, anio),
         base: toInput(base),
         tipoIva: toInputPct(l.tipo_iva ?? 0),
         cuotaIva: toInput(iva),
@@ -382,13 +382,14 @@ function facturasARows(facturas, fileName) {
    Reutiliza la lectura IA de la pestaña de facturas y añade las tres subcuentas
    del Conversor. El asignador (creado por lote) empareja por NIF/nombre y
    autonumera las nuevas, recordando NIF→subcuenta. */
-function facturasASLRows(facturas, fileName, ent, asignador) {
+function facturasASLRows(facturas, fileName, ent, asignador, tri, anio) {
   const rows = [];
   facturas.forEach((f) => {
     const invoiceId = uid();
     const sentido = Number(f.cuenta) === 1 ? "venta" : "compra";
     const nif = (f.nif || "0").toUpperCase().replace(/[\s\-\.]/g, "");
     const contraparte = (f.contraparte || "").toUpperCase().trim();
+    const fechaAj = ajustaFechaATrimestre(f.fecha, tri, anio); // traslada al trimestre si cae fuera
     const asg = asignador.asigna({ nif, nombre: contraparte, sentido });
     const lineas = Array.isArray(f.lineas) && f.lineas.length ? f.lineas : [{}];
     const ret = num(f.cuota_ret) || 0;
@@ -405,8 +406,8 @@ function facturasASLRows(facturas, fileName, ent, asignador) {
         id: uid(), invoiceId, fileName, sentido,
         contraparte, nif,
         numero: String(f.numero ?? "").trim(),
-        fechaFactura: normFecha(f.fecha),
-        fechaAsiento: normFecha(f.fecha), // decisión: fecha del asiento = fecha de factura
+        fechaFactura: fechaAj,
+        fechaAsiento: fechaAj, // decisión: fecha del asiento = fecha de factura
         base: toInput(base),
         tipoIva: toInputPct(tipoIva),
         cuotaIva: toInput(iva),
@@ -513,11 +514,17 @@ const rangoTrimestre = (tri, anio) => {
   const diaFin = new Date(anio, fin, 0).getDate();
   return `01/${String(ini).padStart(2, "0")} a ${String(diaFin).padStart(2, "0")}/${String(fin).padStart(2, "0")}`;
 };
-/* Último día del trimestre como dd/mm/aaaa (para el botón "ajustar al trimestre") */
-const ultimoDiaTrimestre = (tri, anio) => {
-  const fin = tri * 3;
-  const dia = new Date(anio, fin, 0).getDate();
-  return `${String(dia).padStart(2, "0")}/${String(fin).padStart(2, "0")}/${anio}`;
+/* Primer día del trimestre como dd/mm/aaaa (1T→01/01, 2T→01/04, 3T→01/07, 4T→01/10) */
+const primerDiaTrimestre = (tri, anio) => {
+  const ini = (tri - 1) * 3 + 1;
+  return `01/${String(ini).padStart(2, "0")}/${anio}`;
+};
+/* Ajusta una fecha al trimestre: si es válida pero cae fuera, la traslada al
+   primer día del trimestre seleccionado; si no, la deja como está. */
+const ajustaFechaATrimestre = (fechaStr, tri, anio) => {
+  const f = normFecha(fechaStr);
+  if (tri && anio && fechaValida(f) && !fechaEnTrimestre(f, tri, anio)) return primerDiaTrimestre(tri, anio);
+  return f;
 };
 
 const limpiaNif = (v) => {
@@ -825,10 +832,10 @@ export default function App() {
           ? await extraerFacturaWord(obj, titular, claveDespacho)
           : await extraerFacturas(obj, titular, claveDespacho, (b, n) => setFile(f.id, { progreso: `bloque ${b}/${n}` }));
         if (entSL) {
-          const nuevas = facturasASLRows(facturas, f.name, entSL, asignador);
+          const nuevas = facturasASLRows(facturas, f.name, entSL, asignador, trimestreSel, anioSel);
           setRowsSL((p) => [...p, ...nuevas]);
         } else {
-          const nuevas = facturasARows(facturas, f.name);
+          const nuevas = facturasARows(facturas, f.name, trimestreSel, anioSel);
           setRows((p) => [...p, ...nuevas]);
         }
         setFile(f.id, { status: "ok", nFacturas: facturas.length, msg: "", progreso: "" });
@@ -1510,7 +1517,7 @@ export default function App() {
                     <th style={{ ...th, width: 130 }}>Cuenta</th>
                     <th style={{ ...th, width: 160 }}>Concepto</th>
                     <th style={{ ...th, width: 175 }}>Clave gasto</th>
-                    <th style={{ ...th, width: 76 }}></th>
+                    <th style={{ ...th, width: 92, right: 0, zIndex: 2, borderLeft: `1px solid ${C.linea}` }}>Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1572,17 +1579,17 @@ export default function App() {
                               ))}
                             </select>
                           </td>
-                          <td style={{ padding: 3, whiteSpace: "nowrap" }}>
+                          <td style={{ padding: 3, whiteSpace: "nowrap", position: "sticky", right: 0, background: fondo, zIndex: 1, borderLeft: `1px solid ${C.linea}` }}>
                             {fueraTrim && (
-                              <button onClick={() => upd(r.id, "fecha", ultimoDiaTrimestre(trimestreSel, anioSel))} title={`Ajustar al ${trimestreSel}T ${anioSel} (${ultimoDiaTrimestre(trimestreSel, anioSel)})`} style={{ border: "none", background: "transparent", cursor: "pointer", color: C.warn, padding: 4 }} aria-label="Ajustar fecha al trimestre">
+                              <button onClick={() => upd(r.id, "fecha", primerDiaTrimestre(trimestreSel, anioSel))} title={`Ajustar al ${trimestreSel}T ${anioSel} (${primerDiaTrimestre(trimestreSel, anioSel)})`} style={{ border: "none", background: "transparent", cursor: "pointer", color: C.warn, padding: 4 }} aria-label="Ajustar fecha al trimestre">
                                 <CalendarCheck size={15} />
                               </button>
                             )}
                             <button onClick={() => recalcular(r.id)} title="Recalcular cuotas y total desde la base" style={{ border: "none", background: "transparent", cursor: "pointer", color: C.vino, padding: 4 }} aria-label="Recalcular">
                               <Calculator size={15} />
                             </button>
-                            <button onClick={() => borrarFila(r.id)} title="Eliminar apunte" style={{ border: "none", background: "transparent", cursor: "pointer", color: C.gris, padding: 4 }} aria-label="Eliminar">
-                              <Trash2 size={15} />
+                            <button onClick={() => borrarFila(r.id)} title="Eliminar este apunte" style={{ border: "none", background: "transparent", cursor: "pointer", color: C.err, padding: 4 }} aria-label="Eliminar apunte">
+                              <Trash2 size={16} />
                             </button>
                           </td>
                         </tr>
@@ -1656,7 +1663,7 @@ export default function App() {
                     <th style={{ ...th, width: 132 }}>Subcta. cliente/prov.</th>
                     <th style={{ ...th, width: 120 }}>Subcta. IVA</th>
                     <th style={{ ...th, width: 132 }}>Subcta. gasto/ingreso</th>
-                    <th style={{ ...th, width: 56 }}></th>
+                    <th style={{ ...th, width: 92, right: 0, zIndex: 2, borderLeft: `1px solid ${C.linea}` }}>Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1702,12 +1709,12 @@ export default function App() {
                           <td style={{ padding: 3 }} title={r.subGINombre || ""}>
                             <input style={{ ...inputBase, fontFamily: MONO, background: subGIbg }} value={r.subGI} onChange={(e) => updSL(r.id, "subGI", e.target.value.replace(/\D/g, ""))} />
                           </td>
-                          <td style={{ padding: 3, whiteSpace: "nowrap" }}>
+                          <td style={{ padding: 3, whiteSpace: "nowrap", position: "sticky", right: 0, background: fondo, zIndex: 1, borderLeft: `1px solid ${C.linea}` }}>
                             {fueraTrimSL && (
-                              <button onClick={() => { const f = ultimoDiaTrimestre(trimestreSel, anioSel); updSL(r.id, "fechaFactura", f); updSL(r.id, "fechaAsiento", f); }} title={`Ajustar al ${trimestreSel}T ${anioSel} (${ultimoDiaTrimestre(trimestreSel, anioSel)})`} style={{ border: "none", background: "transparent", cursor: "pointer", color: C.warn, padding: 4 }} aria-label="Ajustar fecha al trimestre"><CalendarCheck size={15} /></button>
+                              <button onClick={() => { const f = primerDiaTrimestre(trimestreSel, anioSel); updSL(r.id, "fechaFactura", f); updSL(r.id, "fechaAsiento", f); }} title={`Ajustar al ${trimestreSel}T ${anioSel} (${primerDiaTrimestre(trimestreSel, anioSel)})`} style={{ border: "none", background: "transparent", cursor: "pointer", color: C.warn, padding: 4 }} aria-label="Ajustar fecha al trimestre"><CalendarCheck size={15} /></button>
                             )}
                             <button onClick={() => recalcularSL(r.id)} title="Recalcular IVA y total desde la base" style={{ border: "none", background: "transparent", cursor: "pointer", color: C.vino, padding: 4 }} aria-label="Recalcular"><Calculator size={15} /></button>
-                            <button onClick={() => borrarFilaSL(r.id)} title="Eliminar línea" style={{ border: "none", background: "transparent", cursor: "pointer", color: C.gris, padding: 4 }} aria-label="Eliminar"><Trash2 size={15} /></button>
+                            <button onClick={() => borrarFilaSL(r.id)} title="Eliminar esta línea" style={{ border: "none", background: "transparent", cursor: "pointer", color: C.err, padding: 4 }} aria-label="Eliminar línea"><Trash2 size={16} /></button>
                           </td>
                         </tr>
                         {iss.length > 0 && (
@@ -1743,7 +1750,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.2 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.3 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
