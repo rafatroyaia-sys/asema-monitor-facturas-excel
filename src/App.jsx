@@ -415,7 +415,7 @@ function facturasASLRows(facturas, fileName, ent, asignador, tri, anio) {
         cuotaRet: toInput(retFila),
         total: toInput(total),
         concepto: conceptoConversor(f.cuenta), // COMPRAS/VENTAS/GASTOS/ENERGIA (lo que admite el Conversor)
-        subCP: asg.sub, subCPNombre: asg.nombreSub, subCPNueva: asg.nueva,
+        subCP: asg.sub, subCPNombre: asg.nombreSub, subCPNueva: asg.nueva, subCPCreada: asg.creada,
         subGI: asg.giCode, subGINombre: asg.giNombre, subGINueva: asg.giNueva, subGIDescuadre: asg.giDescuadre,
         subIva: subIva(tipoIva, sentido, ent),
         subRe: "", subRet: "",
@@ -1642,7 +1642,7 @@ export default function App() {
               </div>
             </div>
             <div style={{ fontSize: 12, color: C.gris, marginBottom: 12, lineHeight: 1.5 }}>
-              Las subcuentas <b style={{ color: C.warn }}>en ámbar</b> son nuevas (NIF no encontrado en el listado: autonumeradas o emparejadas por nombre). Revísalas antes de exportar: el mismo NIF recibirá siempre esta subcuenta a partir de ahora.
+              Subcuentas <b style={{ color: C.warn }}>en ámbar</b>: o se han <b>emparejado por nombre</b> (confirma que es la correcta), o el cliente/proveedor es <b>● NUEVO</b> y no estaba en ningún listado, así que la app le ha creado una subcuenta correlativa a la última. Revísalas antes de exportar: el mismo NIF recibirá siempre esa subcuenta a partir de ahora.
             </div>
 
             <div className="overflow-x-auto" style={{ border: `1px solid ${C.linea}`, borderRadius: 8 }}>
@@ -1672,7 +1672,7 @@ export default function App() {
                     const hayErr = iss.some((i) => i.lv === "err");
                     const hayWarn = iss.some((i) => i.lv === "warn");
                     const fondo = hayErr ? C.errBg : hayWarn ? C.warnBg : idx % 2 ? "#FCFAF4" : C.papel;
-                    const subCPbg = r.subCPNueva ? C.warnBg : C.papel;
+                    const subCPbg = (r.subCPNueva || r.subCPCreada) ? C.warnBg : C.papel;
                     const subGIbg = (r.subGINueva || r.subGIDescuadre) ? C.warnBg : C.papel;
                     const fueraTrimSL = fechaValida(r.fechaFactura) && !fechaEnTrimestre(r.fechaFactura, trimestreSel, anioSel);
                     return (
@@ -1701,7 +1701,12 @@ export default function App() {
                             </select>
                           </td>
                           <td style={{ padding: 3 }} title={r.subCPNombre || ""}>
-                            <input style={{ ...inputBase, fontFamily: MONO, background: subCPbg }} value={r.subCP} onChange={(e) => updSL(r.id, "subCP", e.target.value.replace(/\D/g, ""))} />
+                            <input style={{ ...inputBase, fontFamily: MONO, background: subCPbg, borderColor: r.subCPCreada ? C.warn : C.linea }} value={r.subCP} onChange={(e) => updSL(r.id, "subCP", e.target.value.replace(/\D/g, ""))} />
+                            {r.subCPCreada && (
+                              <div style={{ fontSize: 9.5, fontWeight: 800, color: C.warn, letterSpacing: "0.03em", marginTop: 2, whiteSpace: "nowrap" }}>
+                                ● NUEVO · no estaba en el listado
+                              </div>
+                            )}
                           </td>
                           <td style={{ padding: 3 }}>
                             <input style={{ ...inputBase, fontFamily: MONO }} value={r.subIva} onChange={(e) => updSL(r.id, "subIva", e.target.value.replace(/\D/g, ""))} />
@@ -1750,7 +1755,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.3 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.4 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>

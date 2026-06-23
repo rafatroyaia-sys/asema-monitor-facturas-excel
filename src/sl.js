@@ -11,10 +11,11 @@
    ============================================================ */
 
 import bodegon1 from "./sl-seeds/bodegon1.json";
+import bodegon2 from "./sl-seeds/bodegon2.json";
 
-/* Contabilidades disponibles. Se irán añadiendo más seeds (Bodegón 2,
-   Matilde Mateos —solo ingresos—, Carpydekor, Bruzón y la 5ª sin listado). */
-export const CONTABILIDADES_SL = [bodegon1];
+/* Contabilidades disponibles. Se irán añadiendo más seeds (Matilde Mateos
+   —solo ingresos—, Carpydekor, Bruzón y la 5ª sin listado). */
+export const CONTABILIDADES_SL = [bodegon1, bodegon2];
 
 /* Formas societarias y ruido que se ignoran al emparejar por nombre */
 const FORMAS = /\b(S\.?L\.?U?|S\.?A\.?U?|S\.?C\.?P?|S\.?L\.?L|S\.?L\.?N\.?E|C\.?B|S\.?COOP)\b/g;
@@ -25,7 +26,8 @@ export function normNombre(s) {
   return String(s || "")
     .toUpperCase()
     .normalize("NFD").replace(/[̀-ͯ]/g, "")
-    .replace(/[.,]/g, " ")
+    .replace(/\./g, "")   // quita puntos SIN separar: "S.L." → "SL" (luego se elimina como forma)
+    .replace(/,/g, " ")
     .replace(FORMAS, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -120,7 +122,8 @@ export function crearAsignador(ent, mapaNifInicial) {
     const k = nif && nif !== "0" ? nif : null;
 
     let sub = null;
-    let nueva = false; // true → ámbar para revisar (autonumerada o emparejada por nombre)
+    let nueva = false;  // emparejada por nombre (existe en el listado, falta confirmar el NIF)
+    let creada = false; // NUEVA de verdad: no estaba en ningún listado, se autonumera correlativa
 
     if (k && mapaNif[k]) {
       sub = mapaNif[k].sub; // ya emparejado y revisado antes
@@ -131,8 +134,8 @@ export function crearAsignador(ent, mapaNifInicial) {
     }
     if (!sub) {
       sub = siguienteCodigo(mapaCP, raiz);
-      mapaCP[sub] = nombre; // alta provisional, correlativa
-      nueva = true;
+      mapaCP[sub] = nombre; // alta provisional, correlativa al último
+      creada = true;        // proveedor/cliente que la app ha tenido que crear
     }
     const nombreSub = mapaCP[sub] || nombre;
     if (k) mapaNif[k] = { sub, nombre: nombreSub };
@@ -146,7 +149,7 @@ export function crearAsignador(ent, mapaNifInicial) {
     // Descuadre: el gemelo existe pero su nombre no se parece a la contraparte
     const giDescuadre = !!giNombre && normNombre(giNombre) !== normNombre(nombreSub);
 
-    return { sub, nombreSub, nueva, giCode, giNombre, giNueva, giDescuadre };
+    return { sub, nombreSub, nueva, creada, giCode, giNombre, giNueva, giDescuadre };
   }
 
   return { asigna, dump: () => mapaNif };
@@ -185,7 +188,12 @@ export function validarFilaSL(row, tri, anio) {
   if (!row.subCP) issues.push({ lv: "err", msg: "Sin subcuenta de cliente/proveedor" });
   if (!row.subGI) issues.push({ lv: "err", msg: "Sin subcuenta de gasto/ingreso" });
   if (isFinite(tipo) && tipo !== 0 && !row.subIva) issues.push({ lv: "warn", msg: "Sin subcuenta de IVA para ese tipo" });
-  if (row.subCPNueva) issues.push({ lv: "warn", msg: `Subcuenta ${row.subCP} NUEVA: revísala antes de exportar` });
+  if (row.subCPCreada) {
+    const tipo = row.sentido === "venta" ? "CLIENTE" : "PROVEEDOR";
+    issues.push({ lv: "warn", msg: `⚠ ${tipo} NUEVO: no estaba en el listado. Se han creado las subcuentas ${row.subCP} (y gasto/ingreso ${row.subGI}) correlativas a la última. Revísalas antes de exportar.` });
+  } else if (row.subCPNueva) {
+    issues.push({ lv: "warn", msg: `Subcuenta ${row.subCP} emparejada por nombre: confirma que es la correcta` });
+  }
   if (row.subGIDescuadre) issues.push({ lv: "warn", msg: `La cuenta de gasto/ingreso (${row.subGINombre}) no coincide con la contraparte` });
   if (isFinite(base) && isFinite(iva) && isFinite(tipo)) {
     const esp = _r2((base * tipo) / 100);
