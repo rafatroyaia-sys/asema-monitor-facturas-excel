@@ -316,6 +316,22 @@ async function extraerListadoPDF(file, claveDespacho) {
   return data.facturas;
 }
 
+/* ---------- Listado de INGRESOS (Matilde, doble partida) por IA ---------- */
+async function extraerListadoIngresos(file, claveDespacho) {
+  const b64 = await toB64(file);
+  const resp = await fetch("/api/extraer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-asema-key": limpiaClave(claveDespacho) },
+    body: JSON.stringify({ media_type: "application/pdf", data: b64, promptOverride: promptListadoIngresos }),
+  });
+  let data = {};
+  try { data = await resp.json(); } catch { /* sin cuerpo */ }
+  if (resp.status === 401) { const e = new Error(data.error || "Clave del despacho incorrecta"); e.auth = true; throw e; }
+  if (!resp.ok) throw new Error(data.error || `Error del servidor (HTTP ${resp.status})`);
+  if (!Array.isArray(data.facturas)) throw new Error("Respuesta inesperada del servidor.");
+  return data.facturas;
+}
+
 /* Convierte las líneas del listado PDF en filas de la tabla */
 function listadoPDFARows(items) {
   return items.map((f) => {
@@ -386,7 +402,8 @@ function facturasASLRows(facturas, fileName, ent, asignador, tri, anio) {
   const rows = [];
   facturas.forEach((f) => {
     const invoiceId = uid();
-    const sentido = Number(f.cuenta) === 1 ? "venta" : "compra";
+    // Entidades "solo ingresos" (p.ej. Matilde Mateos): todo se registra como venta
+    const sentido = ent.soloIngresos ? "venta" : (Number(f.cuenta) === 1 ? "venta" : "compra");
     const nif = (f.nif || "0").toUpperCase().replace(/[\s\-\.]/g, "");
     const contraparte = (f.contraparte || "").toUpperCase().trim();
     const fechaAj = ajustaFechaATrimestre(f.fecha, tri, anio); // traslada al trimestre si cae fuera
@@ -414,13 +431,49 @@ function facturasASLRows(facturas, fileName, ent, asignador, tri, anio) {
         cuotaRe: toInput(re),
         cuotaRet: toInput(retFila),
         total: toInput(total),
-        concepto: conceptoConversor(f.cuenta), // COMPRAS/VENTAS/GASTOS/ENERGIA (lo que admite el Conversor)
+        concepto: ent.soloIngresos ? "VENTAS" : conceptoConversor(f.cuenta), // 4 conceptos del Conversor
         subCP: asg.sub, subCPNombre: asg.nombreSub, subCPNueva: asg.nueva, subCPCreada: asg.creada,
         subGI: asg.giCode, subGINombre: asg.giNombre, subGINueva: asg.giNueva, subGIDescuadre: asg.giDescuadre,
         subIva: subIva(tipoIva, sentido, ent),
         subRe: "", subRet: "",
         confianza: f.confianza || "media", obs: f.obs || "",
       });
+    });
+  });
+  return rows;
+}
+
+/* ---------- Listado de ingresos (Matilde) → filas SL ----------
+   Cada línea es una venta. Empareja el cliente por CIF si el listado lo trae
+   (2T en adelante), o por nombre/razón si no (1T). IVA y total del propio listado. */
+function listadoMatildeASLRows(items, fileName, ent, asignador, tri, anio) {
+  const rows = [];
+  items.forEach((f) => {
+    const razon = String(f.razon || f.contraparte || "").toUpperCase().trim();
+    const nif = limpiaNif(f.cif); // "0" si el listado aún no trae CIF
+    const asg = asignador.asigna({ nif, nombre: razon, sentido: "venta" });
+    const base = num(f.base);
+    const iva = num(f.cuota_iva);
+    let tipoIva = num(f.tipo_iva);
+    if (!isFinite(tipoIva) || tipoIva === 0)
+      tipoIva = (isFinite(base) && base !== 0 && isFinite(iva)) ? Math.round((iva / base) * 100) : 21;
+    let total = num(f.total);
+    if (!isFinite(total)) total = r2((isFinite(base) ? base : 0) + (isFinite(iva) ? iva : 0));
+    const fechaAj = ajustaFechaATrimestre(f.fecha, tri, anio);
+    rows.push({
+      id: uid(), invoiceId: uid(), fileName, sentido: "venta",
+      contraparte: razon, nif,
+      numero: String(f.numero ?? "").trim(),
+      fechaFactura: fechaAj, fechaAsiento: fechaAj,
+      base: toInput(base), tipoIva: toInputPct(tipoIva), cuotaIva: toInput(iva),
+      cuotaRe: "0,00", cuotaRet: "0,00",
+      total: toInput(total),
+      concepto: "VENTAS",
+      subCP: asg.sub, subCPNombre: asg.nombreSub, subCPNueva: asg.nueva, subCPCreada: asg.creada,
+      subGI: asg.giCode, subGINombre: asg.giNombre, subGINueva: asg.giNueva, subGIDescuadre: asg.giDescuadre,
+      subIva: subIva(tipoIva, "venta", ent),
+      subRe: "", subRet: "",
+      confianza: f.confianza || "media", obs: f.obs || "",
     });
   });
   return rows;
@@ -715,6 +768,24 @@ REGLAS:
 - "total": el importe total de esa línea.
 Sé exhaustivo: extrae TODAS las líneas de ambas columnas, de todas las páginas.`;
 
+/* ---------- Prompt para LISTADO DE INGRESOS (administración de comunidades) ---------- */
+const promptListadoIngresos = `Eres el sistema de extracción contable de una asesoría española. El documento es un LISTADO de FACTURAS EMITIDAS (ingresos) de una administración de fincas y comunidades. Cada fila es una factura de ingreso a una comunidad o cliente.
+
+Columnas habituales: Nº Factura, Fecha, Código, Razón (nombre de la comunidad/cliente), Cuotas (base imponible), IRPF, IVA (importe), Total. ALGUNOS listados traen ADEMÁS una columna con el CIF/NIF del cliente: si existe, extráela; si no, deja "cif":"".
+
+Devuelve EXCLUSIVAMENTE un objeto JSON válido, sin markdown ni texto alrededor:
+{"facturas":[{"numero":"000001","fecha":"16/01/2026","razon":"MARQUES DE LA ENSENADA 17","cif":"","base":70.00,"tipo_iva":21,"cuota_iva":14.70,"total":84.70}]}
+
+REGLAS:
+- Una entrada en "facturas" por cada fila de factura. Ignora cabeceras, subtotales y la fila de TOTALES del final.
+- "razon": el nombre del cliente/comunidad tal cual figura en la columna Razón, en mayúsculas.
+- "cif": el CIF/NIF del cliente SOLO si el listado trae esa columna; en mayúsculas, sin espacios ni puntos ni guiones. Si no aparece, "".
+- Importes con punto decimal y 2 decimales (convierte la coma decimal a punto: 70,00 → 70.00).
+- "base": columna Cuotas. "cuota_iva": columna IVA (importe). "total": columna Total.
+- "tipo_iva": calcúlalo de base e IVA y redondea (14.70 / 70.00 ≈ 21). Si IRPF no es 0, no lo restes de la base.
+- "fecha": dd/mm/aaaa.
+- Sé exhaustivo: TODAS las filas de TODAS las páginas.`;
+
 const PLANTILLAS = [
   { id: "ventas001", nombre: "Excel · Ferretería El Paso — Ventas Serie 001 (comercio mayor)", tipo: "excel", trimestral: true, fn: parseVentasSerie001 },
   { id: "ventasTPV", nombre: "Excel · Ferretería El Paso — Ventas Serie 002 (TPV tienda)", tipo: "excel", trimestral: true, fn: parseVentasTPV002 },
@@ -917,6 +988,32 @@ export default function App() {
     );
 
   const borrarFilaSL = (id) => setRowsSL((p) => p.filter((r) => r.id !== id));
+
+  /* Contabilidad SL seleccionada (para los gates de subida y el importador de ingresos) */
+  const entSLSel = CONTABILIDADES_SL.find((e) => e.id === contabSelId);
+
+  /* ----- Importación del listado de ingresos (Matilde, solo ingresos) ----- */
+  const importarListadoMatilde = async (file) => {
+    if (!file) return;
+    const ent = entSLSel;
+    if (!ent) { setSlMsg("Elige una contabilidad antes de importar."); return; }
+    if (!/\.pdf$/i.test(file.name)) { setSlMsg("El listado de ingresos debe ser un PDF."); return; }
+    if (file.size > MAX_MB * 1024 * 1024) { setSlMsg(`El PDF supera los ${MAX_MB} MB. Divídelo o redúcelo.`); return; }
+    setSlMsg("Leyendo el listado de ingresos con IA… (puede tardar unos segundos)");
+    try {
+      const items = await extraerListadoIngresos(file, claveDespacho);
+      if (!items.length) { setSlMsg("La IA no encontró líneas en el listado. Revisa el PDF."); return; }
+      const asignador = crearAsignador(ent, cargarMapaNif(ent.id));
+      const nuevas = listadoMatildeASLRows(items, file.name, ent, asignador, trimestreSel, anioSel);
+      guardarMapaNif(ent.id, asignador.dump());
+      setRowsSL((p) => [...p, ...nuevas]);
+      const conCif = nuevas.filter((r) => r.nif && r.nif !== "0").length;
+      setSlMsg(`Importadas ${nuevas.length} líneas de ingresos${conCif ? ` (${conCif} con CIF)` : " (sin columna CIF: clientes emparejados por nombre, NIF en blanco)"}. Revísalas abajo antes de exportar.`);
+    } catch (e) {
+      if (e.auth) { salir(); setAvisoClave("La clave del despacho no es correcta. Vuelve a introducirla."); return; }
+      setSlMsg("Error al leer el listado: " + (e.message || "desconocido"));
+    }
+  };
 
   /* ----- Importación de listados Excel (plantillas fijas) ----- */
   const importarListado = async (file) => {
@@ -1260,6 +1357,7 @@ export default function App() {
                     Listado: <b style={{ color: C.tinta }}>{Object.keys(entSL.proveedores || {}).length}</b> proveedores ·{" "}
                     <b style={{ color: C.tinta }}>{Object.keys(entSL.clientes || {}).length}</b> clientes ·{" "}
                     <b style={{ color: C.tinta }}>{nCtas}</b> cuentas de gasto/ingreso.
+                    {entSL.soloIngresos && <span style={{ color: C.vino, fontWeight: 700 }}> · Solo ingresos: todo se registra como VENTA.</span>}
                     {!entSL.nif && <span style={{ color: C.warn }}> Falta el NIF de la sociedad: añádelo para afinar emitida/recibida.</span>}
                   </span>
                 )}
@@ -1328,8 +1426,33 @@ export default function App() {
         </section>
         )}
 
-        {/* ---------- 2 · Facturas (modos facturas y SL) ---------- */}
-        {(modo === "facturas" || modo === "sl") && (
+        {/* ---------- 2 · Listado de ingresos (SL · solo ingresos, p.ej. Matilde) ---------- */}
+        {modo === "sl" && entSLSel?.soloIngresos && (
+        <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
+          <div className="flex items-center gap-2 mb-4">
+            <FileSpreadsheet size={18} style={{ color: C.vino }} />
+            <h2 style={{ fontSize: 15, fontWeight: 800, letterSpacing: "0.04em" }}>2 · LISTADO DE INGRESOS (PDF)</h2>
+            <span style={{ fontSize: 12, color: C.gris }}>— se lee con IA; cada línea es una venta (concepto VENTAS)</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+            <div className="md:col-span-7">
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.gris, letterSpacing: "0.05em", display: "block" }}>ARCHIVO PDF DEL LISTADO DE INGRESOS</label>
+              <input type="file" accept=".pdf" onChange={(e) => { importarListadoMatilde(e.target.files[0]); e.target.value = ""; }} style={{ ...inputBase, padding: "5px 8px", cursor: "pointer" }} />
+            </div>
+          </div>
+          {slMsg && (
+            <div style={{ marginTop: 12, padding: "10px 14px", borderRadius: 8, background: C.crema, color: C.tinta, fontSize: 13, display: "flex", gap: 8, alignItems: "center" }}>
+              <FileText size={16} style={{ color: C.vino }} /> {slMsg}
+            </div>
+          )}
+          <div style={{ marginTop: 12, fontSize: 12, color: C.gris, lineHeight: 1.6 }}>
+            Sube el PDF de «Facturas emitidas» de la administración. Si el listado trae la columna del <b>CIF</b> de cada cliente, el NIF se rellena solo (columna B del Conversor); si aún no la trae, los clientes se emparejan <b>por nombre</b> y el NIF queda en blanco para que lo completes. Revisa siempre antes de exportar.
+          </div>
+        </section>
+        )}
+
+        {/* ---------- 2 · Facturas (facturas, y SL salvo solo-ingresos) ---------- */}
+        {(modo === "facturas" || (modo === "sl" && !entSLSel?.soloIngresos)) && (
         <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
           <div className="flex items-center gap-2 mb-4">
             <Upload size={18} style={{ color: C.vino }} />
@@ -1755,7 +1878,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.4 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.5 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>

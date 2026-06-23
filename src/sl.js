@@ -12,10 +12,13 @@
 
 import bodegon1 from "./sl-seeds/bodegon1.json";
 import bodegon2 from "./sl-seeds/bodegon2.json";
+import matilde from "./sl-seeds/matilde.json";
+import carpydekor from "./sl-seeds/carpydekor.json";
+import bruzon from "./sl-seeds/bruzon.json";
 
-/* Contabilidades disponibles. Se irán añadiendo más seeds (Matilde Mateos
-   —solo ingresos—, Carpydekor, Bruzón y la 5ª sin listado). */
-export const CONTABILIDADES_SL = [bodegon1, bodegon2];
+/* Contabilidades disponibles (5 sociedades; El Bodegón tiene 2 centros).
+   Falta por añadir la 5ª empresa nueva sin listado (numeración desde raíz). */
+export const CONTABILIDADES_SL = [bodegon1, bodegon2, matilde, carpydekor, bruzon];
 
 /* Formas societarias y ruido que se ignoran al emparejar por nombre */
 const FORMAS = /\b(S\.?L\.?U?|S\.?A\.?U?|S\.?C\.?P?|S\.?L\.?L|S\.?L\.?N\.?E|C\.?B|S\.?COOP)\b/g;
