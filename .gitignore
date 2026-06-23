@@ -5,3 +5,6 @@ dist
 .env.local
 
 .vercel
+
+# Listados de cuentas SL (PDF pesados, solo material de origen; el seed JSON ya va versionado)
+listados subcuentas SL/

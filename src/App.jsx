@@ -5,8 +5,12 @@ import { PDFDocument } from "pdf-lib";
 import {
   Upload, FileText, Trash2, Download, Calculator, AlertTriangle,
   CheckCircle2, XCircle, Loader2, Building2, Save, Plus, FileSpreadsheet,
-  Lock, LogOut,
+  Lock, LogOut, CalendarCheck,
 } from "lucide-react";
+import {
+  CONTABILIDADES_SL, crearAsignador, cargarMapaNif, guardarMapaNif,
+  subIva, validarFilaSL, SL_HEADERS, conceptoConversor, CONCEPTOS_SL,
+} from "./sl";
 
 /* ============================================================
    ASEMA ADVISORY · Facturas → Excel Monitor (EOS Autónomos)
@@ -76,12 +80,12 @@ const cuentaLetra = (n) => {
 };
 
 /* ---------- Concepto del apunte (campo "Concepto" de Monitor) ----------
-   El concepto debe COINCIDIR con el nombre de la cuenta: cuenta 1 → VENTAS,
-   cuenta 2 → COMPRAS, etc. (sin "ingresos por" ni "gastos de"). */
-const conceptoPorCuenta = (n) => {
-  const c = CUENTAS.find((x) => x.n === Number(n));
-  return c ? c.t : "GASTOS DIV.";
-};
+   Monitor SOLO admite 4 conceptos: COMPRAS, VENTAS, GASTOS y ENERGIA (sin
+   tilde). Cuenta 1 → VENTAS, 2 → COMPRAS, 5 → ENERGIA, y cualquier otro gasto
+   (personal, seg. social, alquileres, primas, tributos, gastos diversos...) →
+   GASTOS. Mismo criterio que la pestaña SL (reutiliza conceptoConversor).
+   El detalle fino se conserva en la columna CUENTA (letra) y en la CLAVE. */
+const conceptoPorCuenta = (n) => conceptoConversor(n);
 
 /* ---------- Claves de gastos diversos (cuenta 10) ---------- */
 const CLAVES = [
@@ -374,8 +378,55 @@ function facturasARows(facturas, fileName) {
   return rows;
 }
 
+/* ---------- Facturas extraídas → filas de la tabla SL (doble partida) ----------
+   Reutiliza la lectura IA de la pestaña de facturas y añade las tres subcuentas
+   del Conversor. El asignador (creado por lote) empareja por NIF/nombre y
+   autonumera las nuevas, recordando NIF→subcuenta. */
+function facturasASLRows(facturas, fileName, ent, asignador) {
+  const rows = [];
+  facturas.forEach((f) => {
+    const invoiceId = uid();
+    const sentido = Number(f.cuenta) === 1 ? "venta" : "compra";
+    const nif = (f.nif || "0").toUpperCase().replace(/[\s\-\.]/g, "");
+    const contraparte = (f.contraparte || "").toUpperCase().trim();
+    const asg = asignador.asigna({ nif, nombre: contraparte, sentido });
+    const lineas = Array.isArray(f.lineas) && f.lineas.length ? f.lineas : [{}];
+    const ret = num(f.cuota_ret) || 0;
+    lineas.forEach((l, idx) => {
+      const base = num(l.base);
+      const iva = num(l.cuota_iva);
+      const re = num(l.cuota_re) || 0;
+      const retFila = idx === 0 ? ret : 0;
+      let total;
+      if (lineas.length === 1 && isFinite(num(f.total))) total = num(f.total);
+      else total = r2((isFinite(base) ? base : 0) + (isFinite(iva) ? iva : 0) + re - retFila);
+      const tipoIva = l.tipo_iva ?? 0;
+      rows.push({
+        id: uid(), invoiceId, fileName, sentido,
+        contraparte, nif,
+        numero: String(f.numero ?? "").trim(),
+        fechaFactura: normFecha(f.fecha),
+        fechaAsiento: normFecha(f.fecha), // decisión: fecha del asiento = fecha de factura
+        base: toInput(base),
+        tipoIva: toInputPct(tipoIva),
+        cuotaIva: toInput(iva),
+        cuotaRe: toInput(re),
+        cuotaRet: toInput(retFila),
+        total: toInput(total),
+        concepto: conceptoConversor(f.cuenta), // COMPRAS/VENTAS/GASTOS/ENERGIA (lo que admite el Conversor)
+        subCP: asg.sub, subCPNombre: asg.nombreSub, subCPNueva: asg.nueva,
+        subGI: asg.giCode, subGINombre: asg.giNombre, subGINueva: asg.giNueva, subGIDescuadre: asg.giDescuadre,
+        subIva: subIva(tipoIva, sentido, ent),
+        subRe: "", subRet: "",
+        confianza: f.confianza || "media", obs: f.obs || "",
+      });
+    });
+  });
+  return rows;
+}
+
 /* ---------- Validación de cada fila ---------- */
-function validarFila(row, rows) {
+function validarFila(row, rows, tri, anio) {
   const issues = [];
   const base = num(row.base), iva = num(row.cuotaIva), tipo = num(row.tipoIva);
   const re = num(row.cuotaRe) || 0, ret = num(row.cuotaRet) || 0, total = num(row.total);
@@ -405,6 +456,9 @@ function validarFila(row, rows) {
     (o) => o.id !== row.id && o.invoiceId !== row.invoiceId && o.nif === row.nif && o.nif !== "0" && o.numero === row.numero && o.numero !== ""
   );
   if (dup) issues.push({ lv: "warn", msg: "Posible factura duplicada (mismo NIF y nº de factura)" });
+  if (tri && anio && fechaValida(row.fecha) && !fechaEnTrimestre(row.fecha, tri, anio)) {
+    issues.push({ lv: "warn", msg: `Fecha fuera del trimestre seleccionado (${tri}T ${anio}: ${rangoTrimestre(tri, anio)})` });
+  }
   return issues;
 }
 
@@ -443,6 +497,27 @@ const trimestreDeFecha = (fechaStr) => {
   if (!m) return 0;
   const mes = parseInt(m[2], 10);
   return Math.floor((mes - 1) / 3) + 1;
+};
+
+/* ---------- Trimestre + año global a contabilizar ---------- */
+/* ¿La fecha dd/mm/aaaa cae dentro del trimestre (1-4) + año? Sin fecha válida → true
+   (no añadimos este aviso encima de "fecha inválida"). */
+const fechaEnTrimestre = (fechaStr, tri, anio) => {
+  const m = String(fechaStr || "").match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!m) return true;
+  return parseInt(m[3], 10) === Number(anio) && Math.floor((parseInt(m[2], 10) - 1) / 3) + 1 === Number(tri);
+};
+/* Texto del rango del trimestre, p.ej. "01/04 a 30/06" */
+const rangoTrimestre = (tri, anio) => {
+  const ini = (tri - 1) * 3 + 1, fin = tri * 3;
+  const diaFin = new Date(anio, fin, 0).getDate();
+  return `01/${String(ini).padStart(2, "0")} a ${String(diaFin).padStart(2, "0")}/${String(fin).padStart(2, "0")}`;
+};
+/* Último día del trimestre como dd/mm/aaaa (para el botón "ajustar al trimestre") */
+const ultimoDiaTrimestre = (tri, anio) => {
+  const fin = tri * 3;
+  const dia = new Date(anio, fin, 0).getDate();
+  return `${String(dia).padStart(2, "0")}/${String(fin).padStart(2, "0")}/${anio}`;
 };
 
 const limpiaNif = (v) => {
@@ -652,12 +727,15 @@ export default function App() {
   const [claveInput, setClaveInput] = useState("");
   const [avisoClave, setAvisoClave] = useState("");
 
-  const [modo, setModo] = useState("facturas"); // "facturas" | "listados"
+  const [modo, setModo] = useState("facturas"); // "facturas" | "listados" | "sl"
+  const [contabSelId, setContabSelId] = useState(CONTABILIDADES_SL[0]?.id || "");
+  const [rowsSL, setRowsSL] = useState([]);
+  const [slMsg, setSlMsg] = useState("");
   const [plantillaSel, setPlantillaSel] = useState("ventas001");
-  const [trimestreSel, setTrimestreSel] = useState(1);
+  const [trimestreSel, setTrimestreSel] = useState(() => Math.floor(new Date().getMonth() / 3) + 1);
+  const [anioSel, setAnioSel] = useState(() => new Date().getFullYear());
   const [listadoMsg, setListadoMsg] = useState("");
   const [empresa, setEmpresa] = useState({ nombre: "", nif: "" });
-  const [periodo, setPeriodo] = useState("");
   const [guardadas, setGuardadas] = useState([]);
   const [files, setFiles] = useState([]);
   const [rows, setRows] = useState([]);
@@ -723,13 +801,19 @@ export default function App() {
   const setFile = (id, patch) => setFiles((p) => p.map((f) => (f.id === id ? { ...f, ...patch } : f)));
 
   const procesarPendientes = async () => {
-    if (!empresa.nombre || !empresa.nif) {
+    const entSL = modo === "sl" ? CONTABILIDADES_SL.find((e) => e.id === contabSelId) : null;
+    if (modo === "sl") {
+      if (!entSL) { setAviso("Elige una contabilidad SL antes de procesar."); return; }
+    } else if (!empresa.nombre || !empresa.nif) {
       setAviso("Antes de procesar, indica el nombre y NIF del cliente: la app lo necesita para distinguir facturas emitidas de recibidas.");
       return;
     }
     setAviso("");
     setProcesando(true);
-    guardarEmpresa();
+    if (modo !== "sl") guardarEmpresa();
+    // En SL, el titular es la contabilidad elegida; el asignador empareja y autonumera subcuentas
+    const titular = entSL ? { nombre: entSL.nombre, nif: entSL.nif || "0" } : empresa;
+    const asignador = entSL ? crearAsignador(entSL, cargarMapaNif(entSL.id)) : null;
     const pendientes = files.filter((f) => f.status === "pendiente" || f.status === "error");
     for (const f of pendientes) {
       const obj = fileObjs.current[f.id];
@@ -738,10 +822,15 @@ export default function App() {
       try {
         const esWord = /\.(docx|doc)$/i.test(obj.name);
         const facturas = esWord
-          ? await extraerFacturaWord(obj, empresa, claveDespacho)
-          : await extraerFacturas(obj, empresa, claveDespacho, (b, n) => setFile(f.id, { progreso: `bloque ${b}/${n}` }));
-        const nuevas = facturasARows(facturas, f.name);
-        setRows((p) => [...p, ...nuevas]);
+          ? await extraerFacturaWord(obj, titular, claveDespacho)
+          : await extraerFacturas(obj, titular, claveDespacho, (b, n) => setFile(f.id, { progreso: `bloque ${b}/${n}` }));
+        if (entSL) {
+          const nuevas = facturasASLRows(facturas, f.name, entSL, asignador);
+          setRowsSL((p) => [...p, ...nuevas]);
+        } else {
+          const nuevas = facturasARows(facturas, f.name);
+          setRows((p) => [...p, ...nuevas]);
+        }
         setFile(f.id, { status: "ok", nFacturas: facturas.length, msg: "", progreso: "" });
       } catch (e) {
         setFile(f.id, { status: "error", msg: e.message || "Error desconocido" });
@@ -753,6 +842,7 @@ export default function App() {
         }
       }
     }
+    if (asignador) guardarMapaNif(entSL.id, asignador.dump());
     setProcesando(false);
   };
 
@@ -801,6 +891,25 @@ export default function App() {
         cuenta: 10, concepto: conceptoPorCuenta(10), clave: "", confianza: "alta", obs: "",
       },
     ]);
+
+  /* ----- Edición de filas SL ----- */
+  const updSL = (id, campo, valor) =>
+    setRowsSL((p) => p.map((r) => (r.id === id ? { ...r, [campo]: valor } : r)));
+
+  const recalcularSL = (id) =>
+    setRowsSL((p) =>
+      p.map((r) => {
+        if (r.id !== id) return r;
+        const base = num(r.base);
+        if (!isFinite(base)) return r;
+        const iva = r2((base * (num(r.tipoIva) || 0)) / 100);
+        const re = num(r.cuotaRe) || 0;
+        const ret = num(r.cuotaRet) || 0;
+        return { ...r, cuotaIva: toInput(iva), total: toInput(r2(base + iva + re - ret)) };
+      })
+    );
+
+  const borrarFilaSL = (id) => setRowsSL((p) => p.filter((r) => r.id !== id));
 
   /* ----- Importación de listados Excel (plantillas fijas) ----- */
   const importarListado = async (file) => {
@@ -855,12 +964,20 @@ export default function App() {
   /* ----- Validación y resumen ----- */
   const issuesById = useMemo(() => {
     const m = {};
-    rows.forEach((r) => { m[r.id] = validarFila(r, rows); });
+    rows.forEach((r) => { m[r.id] = validarFila(r, rows, trimestreSel, anioSel); });
     return m;
-  }, [rows]);
+  }, [rows, trimestreSel, anioSel]);
 
   const nErr = rows.filter((r) => issuesById[r.id]?.some((i) => i.lv === "err")).length;
   const nWarn = rows.filter((r) => issuesById[r.id]?.some((i) => i.lv === "warn") && !issuesById[r.id]?.some((i) => i.lv === "err")).length;
+
+  const issuesSLById = useMemo(() => {
+    const m = {};
+    rowsSL.forEach((r) => { m[r.id] = validarFilaSL(r, trimestreSel, anioSel); });
+    return m;
+  }, [rowsSL, trimestreSel, anioSel]);
+  const nErrSL = rowsSL.filter((r) => issuesSLById[r.id]?.some((i) => i.lv === "err")).length;
+  const nWarnSL = rowsSL.filter((r) => issuesSLById[r.id]?.some((i) => i.lv === "warn") && !issuesSLById[r.id]?.some((i) => i.lv === "err")).length;
 
   const resumen = useMemo(() => {
     const porCuenta = {};
@@ -932,8 +1049,49 @@ export default function App() {
     const ahora = new Date();
     const sello = `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, "0")}-${String(ahora.getDate()).padStart(2, "0")}_${String(ahora.getHours()).padStart(2, "0")}${String(ahora.getMinutes()).padStart(2, "0")}`;
     const cli = limpio(empresa.nombre) || "CLIENTE";
-    const nombre = `MONITOR_${cli}${periodo ? "_" + limpio(periodo) : ""}_${sello}.xlsx`;
+    const nombre = `MONITOR_${cli}_${trimestreSel}T${anioSel}_${sello}.xlsx`;
     XLSX.writeFile(wb, nombre);
+  };
+
+  /* ----- Exportación al formato del Conversor (doble partida) ----- */
+  const exportarSL = () => {
+    if (!rowsSL.length) return;
+    const ent = CONTABILIDADES_SL.find((e) => e.id === contabSelId);
+    const orden = [...rowsSL].sort((a, b) => {
+      const f = fechaKey(a.fechaFactura).localeCompare(fechaKey(b.fechaFactura));
+      if (f !== 0) return f;
+      return String(a.numero).localeCompare(String(b.numero), "es");
+    });
+    const aoa = [SL_HEADERS];
+    orden.forEach((r) => {
+      aoa.push([
+        r.contraparte, r.nif, r.numero, r.fechaFactura,
+        num(r.base), num(r.cuotaIva), num(r.total), num(r.tipoIva),
+        r.subCP, CONCEPTOS_SL.includes(r.concepto) ? r.concepto : "GASTOS", r.subIva, r.subGI,
+        r.subRe || "", r.subRet || "",
+      ]);
+    });
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const range = XLSX.utils.decode_range(ws["!ref"]);
+    const colsMoneda = [4, 5, 6]; // base, importe IVA, total
+    for (let R = 1; R <= range.e.r; R++) {
+      colsMoneda.forEach((Ccol) => {
+        const cell = ws[XLSX.utils.encode_cell({ r: R, c: Ccol })];
+        if (cell && cell.t === "n") cell.z = "#,##0.00";
+      });
+    }
+    ws["!cols"] = [
+      { wch: 30 }, { wch: 12 }, { wch: 14 }, { wch: 12 },
+      { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 7 },
+      { wch: 18 }, { wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 14 }, { wch: 14 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "CONVERSOR");
+    const limpio = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
+    const ahora = new Date();
+    const sello = `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, "0")}-${String(ahora.getDate()).padStart(2, "0")}_${String(ahora.getHours()).padStart(2, "0")}${String(ahora.getMinutes()).padStart(2, "0")}`;
+    const cli = limpio((ent && (ent.centro ? ent.nombre + " " + ent.centro : ent.nombre)) || "SL");
+    XLSX.writeFile(wb, `CONVERSOR_${cli}_${trimestreSel}T${anioSel}_${sello}.xlsx`);
   };
 
   /* ----- Estilos reutilizables ----- */
@@ -1032,7 +1190,7 @@ export default function App() {
 
         {/* ---------- Selector de modo ---------- */}
         <div style={{ display: "flex", gap: 8 }}>
-          {[["facturas", "Facturas escaneadas (IA)"], ["listados", "Listados Excel (clientes)"]].map(([id, txt]) => (
+          {[["facturas", "Facturas escaneadas (IA)"], ["listados", "Listados Excel (clientes)"], ["sl", "SL (doble partida)"]].map(([id, txt]) => (
             <button
               key={id}
               onClick={() => setModo(id)}
@@ -1048,8 +1206,64 @@ export default function App() {
           ))}
         </div>
 
+        {/* ---------- Periodo global (trimestre + año) · referencia de todas las pestañas ---------- */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: C.papel, border: `1px solid ${C.linea}`, borderLeft: `4px solid ${C.vino}`, borderRadius: 10, padding: "10px 14px" }}>
+          <CalendarCheck size={16} style={{ color: C.vino }} />
+          <span style={{ fontSize: 11, fontWeight: 800, color: C.vino, letterSpacing: "0.05em" }}>PERIODO A CONTABILIZAR</span>
+          <select value={trimestreSel} onChange={(e) => setTrimestreSel(Number(e.target.value))} style={{ ...inputBase, width: "auto", fontWeight: 700, borderColor: C.vino }}>
+            <option value={1}>1T · ene-mar</option>
+            <option value={2}>2T · abr-jun</option>
+            <option value={3}>3T · jul-sep</option>
+            <option value={4}>4T · oct-dic</option>
+          </select>
+          <select value={anioSel} onChange={(e) => setAnioSel(Number(e.target.value))} style={{ ...inputBase, width: "auto", fontWeight: 700, borderColor: C.vino, fontFamily: MONO }}>
+            {Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - 3 + i).map((y) => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+          <span style={{ fontSize: 12, color: C.gris }}>
+            Referencia para las tres pestañas. Las facturas fuera de <b style={{ color: C.tinta }}>{trimestreSel}T {anioSel}</b> ({rangoTrimestre(trimestreSel, anioSel)}) se marcan en ámbar.
+          </span>
+        </div>
 
-        {/* ---------- 1 · Cliente ---------- */}
+
+        {/* ---------- SL · Contabilidad (solo modo sl) ---------- */}
+        {modo === "sl" && (() => {
+          const entSL = CONTABILIDADES_SL.find((e) => e.id === contabSelId);
+          const nCtas = entSL ? Object.keys(entSL.gasto || {}).length + Object.keys(entSL.ingreso || {}).length : 0;
+          return (
+          <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
+            <div className="flex items-center gap-2 mb-4">
+              <Building2 size={18} style={{ color: C.vino }} />
+              <h2 style={{ fontSize: 15, fontWeight: 800, letterSpacing: "0.04em" }}>1 · CONTABILIDAD (DOBLE PARTIDA)</h2>
+              <span style={{ fontSize: 12, color: C.gris }}>— sociedad que se lleva por partida doble; se importa con el Conversor de Monitor</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+              <div className="md:col-span-6">
+                <label style={{ fontSize: 11, fontWeight: 700, color: C.gris, letterSpacing: "0.05em" }}>CONTABILIDAD</label>
+                <select style={{ ...inputBase, fontWeight: 600 }} value={contabSelId} onChange={(e) => setContabSelId(e.target.value)}>
+                  {CONTABILIDADES_SL.map((e) => (
+                    <option key={e.id} value={e.id}>{e.centro ? `${e.nombre} · ${e.centro}` : e.nombre}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="md:col-span-6" style={{ fontSize: 12, color: C.gris, lineHeight: 1.5 }}>
+                {entSL && (
+                  <span>
+                    Listado: <b style={{ color: C.tinta }}>{Object.keys(entSL.proveedores || {}).length}</b> proveedores ·{" "}
+                    <b style={{ color: C.tinta }}>{Object.keys(entSL.clientes || {}).length}</b> clientes ·{" "}
+                    <b style={{ color: C.tinta }}>{nCtas}</b> cuentas de gasto/ingreso.
+                    {!entSL.nif && <span style={{ color: C.warn }}> Falta el NIF de la sociedad: añádelo para afinar emitida/recibida.</span>}
+                  </span>
+                )}
+              </div>
+            </div>
+          </section>
+          );
+        })()}
+
+        {/* ---------- 1 · Cliente (modos facturas/listados) ---------- */}
+        {modo !== "sl" && (
         <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
           <div className="flex items-center gap-2 mb-4">
             <Building2 size={18} style={{ color: C.vino }} />
@@ -1075,11 +1289,7 @@ export default function App() {
                 placeholder="31XXXXXXX"
               />
             </div>
-            <div className="md:col-span-2">
-              <label style={{ fontSize: 11, fontWeight: 700, color: C.gris, letterSpacing: "0.05em" }}>PERIODO (opcional)</label>
-              <input style={inputBase} value={periodo} onChange={(e) => setPeriodo(e.target.value)} placeholder="3T 2025" />
-            </div>
-            <div className="md:col-span-2">
+            <div className="md:col-span-4">
               <button style={{ ...btn(false), width: "100%", justifyContent: "center", padding: "9px 10px" }} onClick={guardarEmpresa}>
                 <Save size={15} /> Guardar cliente
               </button>
@@ -1109,9 +1319,10 @@ export default function App() {
             </div>
           )}
         </section>
+        )}
 
-        {/* ---------- 2 · Facturas (solo modo facturas) ---------- */}
-        {modo === "facturas" && (
+        {/* ---------- 2 · Facturas (modos facturas y SL) ---------- */}
+        {(modo === "facturas" || modo === "sl") && (
         <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
           <div className="flex items-center gap-2 mb-4">
             <Upload size={18} style={{ color: C.vino }} />
@@ -1178,9 +1389,11 @@ export default function App() {
               {procesando ? <Loader2 size={16} className="animate-spin" /> : <Calculator size={16} />}
               {procesando ? "Procesando…" : `Procesar ${pendientes || ""} factura${pendientes === 1 ? "" : "s"} con IA`}
             </button>
-            <button style={btn(false)} onClick={filaManual}>
-              <Plus size={16} /> Añadir apunte manual
-            </button>
+            {modo !== "sl" && (
+              <button style={btn(false)} onClick={filaManual}>
+                <Plus size={16} /> Añadir apunte manual
+              </button>
+            )}
           </div>
         </section>
 
@@ -1196,24 +1409,18 @@ export default function App() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end mb-4">
-            <div className={(PLANTILLAS.find((p) => p.id === plantillaSel) || {}).trimestral ? "md:col-span-5" : "md:col-span-7"}>
+            <div className="md:col-span-7">
               <label style={{ fontSize: 11, fontWeight: 700, color: C.gris, letterSpacing: "0.05em" }}>PLANTILLA (formato del archivo)</label>
               <select style={{ ...inputBase, fontWeight: 600 }} value={plantillaSel} onChange={(e) => setPlantillaSel(e.target.value)}>
                 {PLANTILLAS.map((p) => (<option key={p.id} value={p.id}>{p.nombre}</option>))}
               </select>
+              {(PLANTILLAS.find((p) => p.id === plantillaSel) || {}).trimestral && (
+                <div style={{ fontSize: 11.5, color: C.vino, fontWeight: 600, marginTop: 5 }}>
+                  Se importará solo el <b>{trimestreSel}º trimestre</b> (según el selector de periodo de arriba).
+                </div>
+              )}
             </div>
-            {(PLANTILLAS.find((p) => p.id === plantillaSel) || {}).trimestral && (
-              <div className="md:col-span-2">
-                <label style={{ fontSize: 11, fontWeight: 700, color: C.vino, letterSpacing: "0.05em" }}>TRIMESTRE A IMPORTAR</label>
-                <select style={{ ...inputBase, fontWeight: 700, borderColor: C.vino }} value={trimestreSel} onChange={(e) => setTrimestreSel(Number(e.target.value))}>
-                  <option value={1}>1T · ene-mar</option>
-                  <option value={2}>2T · abr-jun</option>
-                  <option value={3}>3T · jul-sep</option>
-                  <option value={4}>4T · oct-dic</option>
-                </select>
-              </div>
-            )}
-            <div className={(PLANTILLAS.find((p) => p.id === plantillaSel) || {}).trimestral ? "md:col-span-5" : "md:col-span-5"}>
+            <div className="md:col-span-5">
               <label style={{ fontSize: 11, fontWeight: 700, color: C.gris, letterSpacing: "0.05em", display: "block" }}>
                 {(PLANTILLAS.find((p) => p.id === plantillaSel) || {}).tipo === "pdf" ? "ARCHIVO PDF" : "ARCHIVO EXCEL (.xlsx / .xls)"}
               </label>
@@ -1233,13 +1440,13 @@ export default function App() {
           )}
 
           <div style={{ marginTop: 14, fontSize: 12, color: C.gris, lineHeight: 1.6 }}>
-            Para Ferretería El Paso (que acumula todo el año en el mismo archivo), elige el <b>trimestre a importar</b>: solo se normalizan las líneas con fecha de ese trimestre. Para Aaron no aparece esa opción porque ya envía cada trimestre por separado. Las ventas se asignan a la cuenta <b>V</b> y las compras a la cuenta <b>C</b>. Los abonos (importes negativos) se respetan con su signo; las facturas con varios tipos de IVA se separan en una línea por tipo. El NIF se normaliza solo (quita ES, guiones y puntos). El listado PDF de Aaron se lee con IA (extrae ventas y compras en una pasada) y, como aún no trae NIF, esas líneas saldrán con NIF 0 y aviso ámbar: es normal. Revisa siempre el resultado antes de exportar. Consejo: rellena arriba el nombre del cliente para que el Excel se descargue con su nombre y la fecha, no como "CLIENTE".
+            Para Ferretería El Paso (que acumula todo el año en el mismo archivo), se importan solo las líneas del <b>trimestre seleccionado arriba</b> (el selector de periodo global). Para Aaron no se filtra porque ya envía cada trimestre por separado. Las ventas se asignan a la cuenta <b>V</b> y las compras a la cuenta <b>C</b>. Los abonos (importes negativos) se respetan con su signo; las facturas con varios tipos de IVA se separan en una línea por tipo. El NIF se normaliza solo (quita ES, guiones y puntos). El listado PDF de Aaron se lee con IA (extrae ventas y compras en una pasada) y, como aún no trae NIF, esas líneas saldrán con NIF 0 y aviso ámbar: es normal. Revisa siempre el resultado antes de exportar. Consejo: rellena arriba el nombre del cliente para que el Excel se descargue con su nombre y la fecha, no como "CLIENTE".
           </div>
         </section>
         )}
 
-                {/* ---------- 3 · Revisión ---------- */}
-        {rows.length > 0 && (
+                {/* ---------- 3 · Revisión (facturas/listados) ---------- */}
+        {modo !== "sl" && rows.length > 0 && (
           <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
             <div className="flex items-center gap-2 mb-1 flex-wrap">
               <FileSpreadsheet size={18} style={{ color: C.vino }} />
@@ -1312,6 +1519,7 @@ export default function App() {
                     const hayErr = iss.some((i) => i.lv === "err");
                     const hayWarn = iss.some((i) => i.lv === "warn");
                     const fondo = hayErr ? C.errBg : hayWarn ? C.warnBg : idx % 2 ? "#FCFAF4" : C.papel;
+                    const fueraTrim = fechaValida(r.fecha) && !fechaEnTrimestre(r.fecha, trimestreSel, anioSel);
                     return (
                       <React.Fragment key={r.id}>
                         <tr style={{ background: fondo }}>
@@ -1348,7 +1556,9 @@ export default function App() {
                             </select>
                           </td>
                           <td style={{ padding: 3 }}>
-                            <input style={inputBase} value={r.concepto || ""} onChange={(e) => upd(r.id, "concepto", e.target.value.toUpperCase())} />
+                            <select style={{ ...inputBase, fontWeight: 600 }} value={CONCEPTOS_SL.includes(r.concepto) ? r.concepto : "GASTOS"} onChange={(e) => upd(r.id, "concepto", e.target.value)}>
+                              {CONCEPTOS_SL.map((c) => (<option key={c} value={c}>{c}</option>))}
+                            </select>
                           </td>
                           <td style={{ padding: 3 }}>
                             <select
@@ -1363,6 +1573,11 @@ export default function App() {
                             </select>
                           </td>
                           <td style={{ padding: 3, whiteSpace: "nowrap" }}>
+                            {fueraTrim && (
+                              <button onClick={() => upd(r.id, "fecha", ultimoDiaTrimestre(trimestreSel, anioSel))} title={`Ajustar al ${trimestreSel}T ${anioSel} (${ultimoDiaTrimestre(trimestreSel, anioSel)})`} style={{ border: "none", background: "transparent", cursor: "pointer", color: C.warn, padding: 4 }} aria-label="Ajustar fecha al trimestre">
+                                <CalendarCheck size={15} />
+                              </button>
+                            )}
                             <button onClick={() => recalcular(r.id)} title="Recalcular cuotas y total desde la base" style={{ border: "none", background: "transparent", cursor: "pointer", color: C.vino, padding: 4 }} aria-label="Recalcular">
                               <Calculator size={15} />
                             </button>
@@ -1406,8 +1621,129 @@ export default function App() {
           </section>
         )}
 
+        {/* ---------- 3 · Revisión SL (doble partida) ---------- */}
+        {modo === "sl" && rowsSL.length > 0 && (
+          <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <FileSpreadsheet size={18} style={{ color: C.vino }} />
+              <h2 style={{ fontSize: 15, fontWeight: 800, letterSpacing: "0.04em" }}>3 · REVISIÓN — CONVERSOR (DOBLE PARTIDA)</h2>
+              <span style={{ fontSize: 12, color: C.gris }}>— {rowsSL.length} línea{rowsSL.length !== 1 ? "s" : ""}</span>
+              <div className="flex gap-2 ml-auto">
+                {nErrSL > 0 && (<span style={{ fontSize: 12, fontWeight: 700, color: C.err, background: C.errBg, padding: "4px 10px", borderRadius: 999 }}>{nErrSL} con errores</span>)}
+                {nWarnSL > 0 && (<span style={{ fontSize: 12, fontWeight: 700, color: C.warn, background: C.warnBg, padding: "4px 10px", borderRadius: 999 }}>{nWarnSL} con avisos</span>)}
+                {nErrSL === 0 && nWarnSL === 0 && (<span style={{ fontSize: 12, fontWeight: 700, color: C.ok, background: C.okBg, padding: "4px 10px", borderRadius: 999 }}>Todo cuadra</span>)}
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: C.gris, marginBottom: 12, lineHeight: 1.5 }}>
+              Las subcuentas <b style={{ color: C.warn }}>en ámbar</b> son nuevas (NIF no encontrado en el listado: autonumeradas o emparejadas por nombre). Revísalas antes de exportar: el mismo NIF recibirá siempre esta subcuenta a partir de ahora.
+            </div>
+
+            <div className="overflow-x-auto" style={{ border: `1px solid ${C.linea}`, borderRadius: 8 }}>
+              <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 1680 }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...th, width: 36 }}></th>
+                    <th style={{ ...th, width: 72 }}>Sentido</th>
+                    <th style={{ ...th, minWidth: 180 }}>Nombre</th>
+                    <th style={{ ...th, width: 105 }}>NIF</th>
+                    <th style={{ ...th, width: 100 }}>Nº factura</th>
+                    <th style={{ ...th, width: 100 }}>Fecha</th>
+                    <th style={{ ...th, width: 95, textAlign: "right" }}>Base</th>
+                    <th style={{ ...th, width: 56, textAlign: "right" }}>% IVA</th>
+                    <th style={{ ...th, width: 92, textAlign: "right" }}>Importe IVA</th>
+                    <th style={{ ...th, width: 95, textAlign: "right" }}>Total</th>
+                    <th style={{ ...th, minWidth: 150 }}>Concepto</th>
+                    <th style={{ ...th, width: 132 }}>Subcta. cliente/prov.</th>
+                    <th style={{ ...th, width: 120 }}>Subcta. IVA</th>
+                    <th style={{ ...th, width: 132 }}>Subcta. gasto/ingreso</th>
+                    <th style={{ ...th, width: 56 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rowsSL.map((r, idx) => {
+                    const iss = issuesSLById[r.id] || [];
+                    const hayErr = iss.some((i) => i.lv === "err");
+                    const hayWarn = iss.some((i) => i.lv === "warn");
+                    const fondo = hayErr ? C.errBg : hayWarn ? C.warnBg : idx % 2 ? "#FCFAF4" : C.papel;
+                    const subCPbg = r.subCPNueva ? C.warnBg : C.papel;
+                    const subGIbg = (r.subGINueva || r.subGIDescuadre) ? C.warnBg : C.papel;
+                    const fueraTrimSL = fechaValida(r.fechaFactura) && !fechaEnTrimestre(r.fechaFactura, trimestreSel, anioSel);
+                    return (
+                      <React.Fragment key={r.id}>
+                        <tr style={{ background: fondo }}>
+                          <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                            {hayErr ? <XCircle size={15} style={{ color: C.err }} /> : hayWarn ? <AlertTriangle size={15} style={{ color: C.warn }} /> : <CheckCircle2 size={15} style={{ color: C.ok }} />}
+                          </td>
+                          <td style={{ padding: 3 }}>
+                            <select style={{ ...inputBase, fontWeight: 600 }} value={r.sentido} onChange={(e) => updSL(r.id, "sentido", e.target.value)}>
+                              <option value="compra">Compra</option>
+                              <option value="venta">Venta</option>
+                            </select>
+                          </td>
+                          <td style={{ padding: 3 }}><input style={inputBase} value={r.contraparte} onChange={(e) => updSL(r.id, "contraparte", e.target.value.toUpperCase())} /></td>
+                          <td style={{ padding: 3 }}><input style={{ ...inputBase, fontFamily: MONO }} value={r.nif} onChange={(e) => updSL(r.id, "nif", e.target.value.toUpperCase().replace(/[\s\-\.]/g, ""))} /></td>
+                          <td style={{ padding: 3 }}><input style={{ ...inputBase, fontFamily: MONO }} value={r.numero} onChange={(e) => updSL(r.id, "numero", e.target.value)} /></td>
+                          <td style={{ padding: 3 }}><input style={{ ...inputBase, fontFamily: MONO }} value={r.fechaFactura} onChange={(e) => updSL(r.id, "fechaFactura", e.target.value)} onBlur={(e) => { const v = normFecha(e.target.value); updSL(r.id, "fechaFactura", v); updSL(r.id, "fechaAsiento", v); }} placeholder="dd/mm/aaaa" /></td>
+                          <td style={{ padding: 3 }}><input style={inputNum} value={r.base} onChange={(e) => updSL(r.id, "base", e.target.value)} /></td>
+                          <td style={{ padding: 3 }}><input style={inputNum} value={r.tipoIva} onChange={(e) => updSL(r.id, "tipoIva", e.target.value)} /></td>
+                          <td style={{ padding: 3 }}><input style={inputNum} value={r.cuotaIva} onChange={(e) => updSL(r.id, "cuotaIva", e.target.value)} /></td>
+                          <td style={{ padding: 3 }}><input style={{ ...inputNum, fontWeight: 700 }} value={r.total} onChange={(e) => updSL(r.id, "total", e.target.value)} /></td>
+                          <td style={{ padding: 3 }}>
+                            <select style={{ ...inputBase, fontWeight: 600 }} value={CONCEPTOS_SL.includes(r.concepto) ? r.concepto : "GASTOS"} onChange={(e) => updSL(r.id, "concepto", e.target.value)}>
+                              {CONCEPTOS_SL.map((c) => (<option key={c} value={c}>{c}</option>))}
+                            </select>
+                          </td>
+                          <td style={{ padding: 3 }} title={r.subCPNombre || ""}>
+                            <input style={{ ...inputBase, fontFamily: MONO, background: subCPbg }} value={r.subCP} onChange={(e) => updSL(r.id, "subCP", e.target.value.replace(/\D/g, ""))} />
+                          </td>
+                          <td style={{ padding: 3 }}>
+                            <input style={{ ...inputBase, fontFamily: MONO }} value={r.subIva} onChange={(e) => updSL(r.id, "subIva", e.target.value.replace(/\D/g, ""))} />
+                          </td>
+                          <td style={{ padding: 3 }} title={r.subGINombre || ""}>
+                            <input style={{ ...inputBase, fontFamily: MONO, background: subGIbg }} value={r.subGI} onChange={(e) => updSL(r.id, "subGI", e.target.value.replace(/\D/g, ""))} />
+                          </td>
+                          <td style={{ padding: 3, whiteSpace: "nowrap" }}>
+                            {fueraTrimSL && (
+                              <button onClick={() => { const f = ultimoDiaTrimestre(trimestreSel, anioSel); updSL(r.id, "fechaFactura", f); updSL(r.id, "fechaAsiento", f); }} title={`Ajustar al ${trimestreSel}T ${anioSel} (${ultimoDiaTrimestre(trimestreSel, anioSel)})`} style={{ border: "none", background: "transparent", cursor: "pointer", color: C.warn, padding: 4 }} aria-label="Ajustar fecha al trimestre"><CalendarCheck size={15} /></button>
+                            )}
+                            <button onClick={() => recalcularSL(r.id)} title="Recalcular IVA y total desde la base" style={{ border: "none", background: "transparent", cursor: "pointer", color: C.vino, padding: 4 }} aria-label="Recalcular"><Calculator size={15} /></button>
+                            <button onClick={() => borrarFilaSL(r.id)} title="Eliminar línea" style={{ border: "none", background: "transparent", cursor: "pointer", color: C.gris, padding: 4 }} aria-label="Eliminar"><Trash2 size={15} /></button>
+                          </td>
+                        </tr>
+                        {iss.length > 0 && (
+                          <tr style={{ background: fondo }}>
+                            <td></td>
+                            <td colSpan={14} style={{ padding: "0 6px 7px", fontSize: 11.5, color: hayErr ? C.err : C.warn }}>
+                              {iss.map((i, k) => (<span key={k} style={{ marginRight: 14 }}>• {i.msg}</span>))}
+                              <span style={{ color: C.gris }}>· origen: {r.fileName}</span>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-5 flex items-center gap-4 flex-wrap">
+              <button style={{ ...btn(true), opacity: nErrSL > 0 ? 0.85 : 1 }} onClick={exportarSL}>
+                <Download size={16} /> Exportar Excel para el Conversor
+              </button>
+              {nErrSL > 0 && (
+                <span style={{ fontSize: 12.5, color: C.err, display: "flex", alignItems: "center", gap: 6 }}>
+                  <AlertTriangle size={15} /> Hay {nErrSL} línea{nErrSL !== 1 ? "s" : ""} con errores: corrígelas antes de importar en el Conversor.
+                </span>
+              )}
+              <span style={{ fontSize: 12, color: C.gris, marginLeft: "auto" }}>
+                Excel para el Conversor (A=Nombre, B=NIF, C=Nº, D=Fecha, E=Base, F=Importe IVA, G=Total, H=%IVA, I=Subcta. C/P, J=Concepto, K=Subcta. IVA, L=Subcta. gasto/ingreso). Reutiliza tu plantilla y mapea las 3 subcuentas (I, K, L).
+              </span>
+            </div>
+          </section>
+        )}
+
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.1 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.2 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
