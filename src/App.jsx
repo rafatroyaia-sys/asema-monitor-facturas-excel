@@ -10,6 +10,7 @@ import {
 import {
   CONTABILIDADES_SL, crearAsignador, cargarMapaNif, guardarMapaNif,
   subIva, validarFilaSL, SL_HEADERS, conceptoConversor, CONCEPTOS_SL,
+  cargarBanco, guardarBanco,
 } from "./sl";
 
 /* ============================================================
@@ -398,7 +399,7 @@ function facturasARows(facturas, fileName, tri, anio) {
    Reutiliza la lectura IA de la pestaña de facturas y añade las tres subcuentas
    del Conversor. El asignador (creado por lote) empareja por NIF/nombre y
    autonumera las nuevas, recordando NIF→subcuenta. */
-function facturasASLRows(facturas, fileName, ent, asignador, tri, anio) {
+function facturasASLRows(facturas, fileName, ent, asignador, tri, anio, banco) {
   const rows = [];
   facturas.forEach((f) => {
     const invoiceId = uid();
@@ -435,6 +436,7 @@ function facturasASLRows(facturas, fileName, ent, asignador, tri, anio) {
         subCP: asg.sub, subCPNombre: asg.nombreSub, subCPNueva: asg.nueva, subCPCreada: asg.creada,
         subGI: asg.giCode, subGINombre: asg.giNombre, subGINueva: asg.giNueva, subGIDescuadre: asg.giDescuadre,
         subIva: subIva(tipoIva, sentido, ent),
+        subBanco: banco || "",
         subRe: "", subRet: "",
         confianza: f.confianza || "media", obs: f.obs || "",
       });
@@ -446,7 +448,7 @@ function facturasASLRows(facturas, fileName, ent, asignador, tri, anio) {
 /* ---------- Listado de ingresos (Matilde) → filas SL ----------
    Cada línea es una venta. Empareja el cliente por CIF si el listado lo trae
    (2T en adelante), o por nombre/razón si no (1T). IVA y total del propio listado. */
-function listadoMatildeASLRows(items, fileName, ent, asignador, tri, anio) {
+function listadoMatildeASLRows(items, fileName, ent, asignador, tri, anio, banco) {
   const rows = [];
   items.forEach((f) => {
     const razon = String(f.razon || f.contraparte || "").toUpperCase().trim();
@@ -472,6 +474,7 @@ function listadoMatildeASLRows(items, fileName, ent, asignador, tri, anio) {
       subCP: asg.sub, subCPNombre: asg.nombreSub, subCPNueva: asg.nueva, subCPCreada: asg.creada,
       subGI: asg.giCode, subGINombre: asg.giNombre, subGINueva: asg.giNueva, subGIDescuadre: asg.giDescuadre,
       subIva: subIva(tipoIva, "venta", ent),
+      subBanco: banco || "",
       subRe: "", subRet: "",
       confianza: f.confianza || "media", obs: f.obs || "",
     });
@@ -809,6 +812,7 @@ export default function App() {
   const [contabSelId, setContabSelId] = useState(CONTABILIDADES_SL[0]?.id || "");
   const [rowsSL, setRowsSL] = useState([]);
   const [slMsg, setSlMsg] = useState("");
+  const [bancoSel, setBancoSel] = useState(() => cargarBanco(CONTABILIDADES_SL[0]));
   const [plantillaSel, setPlantillaSel] = useState("ventas001");
   const [trimestreSel, setTrimestreSel] = useState(() => Math.floor(new Date().getMonth() / 3) + 1);
   const [anioSel, setAnioSel] = useState(() => new Date().getFullYear());
@@ -830,6 +834,11 @@ export default function App() {
       if (r) setGuardadas(JSON.parse(r));
     } catch { /* sin clientes guardados todavía */ }
   }, []);
+
+  /* Banco (contrapartida) por defecto al cambiar de contabilidad SL */
+  useEffect(() => {
+    setBancoSel(cargarBanco(CONTABILIDADES_SL.find((e) => e.id === contabSelId)));
+  }, [contabSelId]);
 
   const guardarEmpresa = () => {
     if (!empresa.nombre || !empresa.nif) return;
@@ -903,7 +912,7 @@ export default function App() {
           ? await extraerFacturaWord(obj, titular, claveDespacho)
           : await extraerFacturas(obj, titular, claveDespacho, (b, n) => setFile(f.id, { progreso: `bloque ${b}/${n}` }));
         if (entSL) {
-          const nuevas = facturasASLRows(facturas, f.name, entSL, asignador, trimestreSel, anioSel);
+          const nuevas = facturasASLRows(facturas, f.name, entSL, asignador, trimestreSel, anioSel, bancoSel);
           setRowsSL((p) => [...p, ...nuevas]);
         } else {
           const nuevas = facturasARows(facturas, f.name, trimestreSel, anioSel);
@@ -1004,7 +1013,7 @@ export default function App() {
       const items = await extraerListadoIngresos(file, claveDespacho);
       if (!items.length) { setSlMsg("La IA no encontró líneas en el listado. Revisa el PDF."); return; }
       const asignador = crearAsignador(ent, cargarMapaNif(ent.id));
-      const nuevas = listadoMatildeASLRows(items, file.name, ent, asignador, trimestreSel, anioSel);
+      const nuevas = listadoMatildeASLRows(items, file.name, ent, asignador, trimestreSel, anioSel, bancoSel);
       guardarMapaNif(ent.id, asignador.dump());
       setRowsSL((p) => [...p, ...nuevas]);
       const conCif = nuevas.filter((r) => r.nif && r.nif !== "0").length;
@@ -1172,7 +1181,7 @@ export default function App() {
         r.contraparte, r.nif, r.numero, r.fechaFactura,
         num(r.base), num(r.cuotaIva), num(r.total), num(r.tipoIva),
         r.subCP, CONCEPTOS_SL.includes(r.concepto) ? r.concepto : "GASTOS", r.subIva, r.subGI,
-        r.subRe || "", r.subRet || "",
+        r.subBanco || "", r.subRe || "", r.subRet || "",
       ]);
     });
     const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -1187,7 +1196,7 @@ export default function App() {
     ws["!cols"] = [
       { wch: 30 }, { wch: 12 }, { wch: 14 }, { wch: 12 },
       { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 7 },
-      { wch: 18 }, { wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 14 }, { wch: 14 },
+      { wch: 18 }, { wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 14 },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "CONVERSOR");
@@ -1343,7 +1352,7 @@ export default function App() {
               <span style={{ fontSize: 12, color: C.gris }}>— sociedad que se lleva por partida doble; se importa con el Conversor de Monitor</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-              <div className="md:col-span-6">
+              <div className="md:col-span-5">
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.gris, letterSpacing: "0.05em" }}>CONTABILIDAD</label>
                 <select style={{ ...inputBase, fontWeight: 600 }} value={contabSelId} onChange={(e) => setContabSelId(e.target.value)}>
                   {CONTABILIDADES_SL.map((e) => (
@@ -1351,7 +1360,15 @@ export default function App() {
                   ))}
                 </select>
               </div>
-              <div className="md:col-span-6" style={{ fontSize: 12, color: C.gris, lineHeight: 1.5 }}>
+              <div className="md:col-span-4">
+                <label style={{ fontSize: 11, fontWeight: 700, color: C.vino, letterSpacing: "0.05em" }}>BANCO · cobros/pagos (572)</label>
+                <select style={{ ...inputBase, fontFamily: MONO, fontWeight: 600, borderColor: C.vino }} value={bancoSel} onChange={(e) => { setBancoSel(e.target.value); guardarBanco(entSL.id, e.target.value); }}>
+                  {Object.entries(entSL.bancos || { "57200000000": "Banco c/c (euros)" }).map(([c, n]) => (
+                    <option key={c} value={c}>{c} · {n}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="md:col-span-3" style={{ fontSize: 12, color: C.gris, lineHeight: 1.5 }}>
                 {entSL && (
                   <span>
                     Listado: <b style={{ color: C.tinta }}>{Object.keys(entSL.proveedores || {}).length}</b> proveedores ·{" "}
@@ -1786,6 +1803,7 @@ export default function App() {
                     <th style={{ ...th, width: 132 }}>Subcta. cliente/prov.</th>
                     <th style={{ ...th, width: 120 }}>Subcta. IVA</th>
                     <th style={{ ...th, width: 132 }}>Subcta. gasto/ingreso</th>
+                    <th style={{ ...th, width: 120 }}>Subcta. banco</th>
                     <th style={{ ...th, width: 92, right: 0, zIndex: 2, borderLeft: `1px solid ${C.linea}` }}>Acciones</th>
                   </tr>
                 </thead>
@@ -1837,6 +1855,9 @@ export default function App() {
                           <td style={{ padding: 3 }} title={r.subGINombre || ""}>
                             <input style={{ ...inputBase, fontFamily: MONO, background: subGIbg }} value={r.subGI} onChange={(e) => updSL(r.id, "subGI", e.target.value.replace(/\D/g, ""))} />
                           </td>
+                          <td style={{ padding: 3 }} title="Subcuenta de banco (cobro/pago)">
+                            <input style={{ ...inputBase, fontFamily: MONO }} value={r.subBanco || ""} onChange={(e) => updSL(r.id, "subBanco", e.target.value.replace(/\D/g, ""))} />
+                          </td>
                           <td style={{ padding: 3, whiteSpace: "nowrap", position: "sticky", right: 0, background: fondo, zIndex: 1, borderLeft: `1px solid ${C.linea}` }}>
                             {fueraTrimSL && (
                               <button onClick={() => { const f = primerDiaTrimestre(trimestreSel, anioSel); updSL(r.id, "fechaFactura", f); updSL(r.id, "fechaAsiento", f); }} title={`Ajustar al ${trimestreSel}T ${anioSel} (${primerDiaTrimestre(trimestreSel, anioSel)})`} style={{ border: "none", background: "transparent", cursor: "pointer", color: C.warn, padding: 4 }} aria-label="Ajustar fecha al trimestre"><CalendarCheck size={15} /></button>
@@ -1848,7 +1869,7 @@ export default function App() {
                         {iss.length > 0 && (
                           <tr style={{ background: fondo }}>
                             <td></td>
-                            <td colSpan={14} style={{ padding: "0 6px 7px", fontSize: 11.5, color: hayErr ? C.err : C.warn }}>
+                            <td colSpan={15} style={{ padding: "0 6px 7px", fontSize: 11.5, color: hayErr ? C.err : C.warn }}>
                               {iss.map((i, k) => (<span key={k} style={{ marginRight: 14 }}>• {i.msg}</span>))}
                               <span style={{ color: C.gris }}>· origen: {r.fileName}</span>
                             </td>
@@ -1871,14 +1892,14 @@ export default function App() {
                 </span>
               )}
               <span style={{ fontSize: 12, color: C.gris, marginLeft: "auto" }}>
-                Excel para el Conversor (A=Nombre, B=NIF, C=Nº, D=Fecha, E=Base, F=Importe IVA, G=Total, H=%IVA, I=Subcta. C/P, J=Concepto, K=Subcta. IVA, L=Subcta. gasto/ingreso). Reutiliza tu plantilla y mapea las 3 subcuentas (I, K, L).
+                Excel para el Conversor (A=Nombre, B=NIF, C=Nº, D=Fecha, E=Base, F=Importe IVA, G=Total, H=%IVA, I=Subcta. C/P, J=Concepto, K=Subcta. IVA, L=Subcta. gasto/ingreso, M=Subcta. banco). Reutiliza tu plantilla y mapea las 4 subcuentas (I, K, L, M).
               </span>
             </div>
           </section>
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.5 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.6 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>

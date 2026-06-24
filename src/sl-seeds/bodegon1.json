@@ -336,5 +336,9 @@
   "21": "47700000021"
  },
  "raizProveedor": "40000000",
- "raizCliente": "43000000"
+ "raizCliente": "43000000",
+ "banco": "57200000000",
+ "bancos": {
+  "57200000000": "Banco c/c (euros)"
+ }
 }

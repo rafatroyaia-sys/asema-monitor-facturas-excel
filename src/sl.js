@@ -222,5 +222,17 @@ export const SL_HEADERS = [
   "Nombre", "NIF", "Nº factura", "Fecha",
   "Base imponible", "Importe IVA", "Total", "% IVA",
   "Subcuenta cliente/proveedor", "Concepto", "Subcuenta de IVA", "Subcuenta de gasto/ingreso",
-  "Subcuenta recargo", "Subcuenta retención",
+  "Subcuenta banco", "Subcuenta recargo", "Subcuenta retención",
 ];
+
+/* ---------- Banco (contrapartida de cobro/pago) por contabilidad ----------
+   Todas las SL cobran/pagan por banco (subcuenta 572…). Se elige por entidad y
+   se recuerda; por defecto, la 57200000000 que traen todos los listados. */
+const claveBanco = (entId) => `asema_sl_banco_${entId}`;
+export function cargarBanco(ent) {
+  if (!ent) return "";
+  try { return localStorage.getItem(claveBanco(ent.id)) || ent.banco || ""; } catch { return ent.banco || ""; }
+}
+export function guardarBanco(entId, code) {
+  try { localStorage.setItem(claveBanco(entId), code); } catch { /* opcional */ }
+}
