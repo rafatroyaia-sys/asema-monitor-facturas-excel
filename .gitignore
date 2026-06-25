@@ -8,3 +8,6 @@ dist
 
 # Listados de cuentas SL (PDF pesados, solo material de origen; el seed JSON ya va versionado)
 listados subcuentas SL/
+
+# Plantillas de ejemplo de Monitor (material de referencia, no de la app)
+plantillas excel de pruebas programa monitor informatica/

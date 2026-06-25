@@ -121,38 +121,27 @@ export function crearAsignador(ent, mapaNifInicial) {
   function asigna({ nif, nombre, sentido }) {
     const esCompra = sentido === "compra";
     const mapaCP = esCompra ? prov : cli;
-    const raiz = esCompra ? (ent.raizProveedor || "400") : (ent.raizCliente || "430");
+    const mapaGI = esCompra ? gasto : ingreso;
     const k = nif && nif !== "0" ? nif : null;
 
     let sub = null;
     let nueva = false;  // emparejada por nombre (existe en el listado, falta confirmar el NIF)
-    let creada = false; // NUEVA de verdad: no estaba en ningún listado, se autonumera correlativa
+    let creada = false; // NO está en el listado → subcuenta EN BLANCO + aviso (Monitor la crea al importar)
 
-    if (k && mapaNif[k]) {
-      sub = mapaNif[k].sub; // ya emparejado y revisado antes
-    }
-    if (!sub) {
-      const porNombre = buscaPorNombre(mapaCP, nombre);
-      if (porNombre) { sub = porNombre; nueva = true; } // empareja por nombre: a revisar
-    }
-    if (!sub) {
-      sub = siguienteCodigo(mapaCP, raiz);
-      mapaCP[sub] = nombre; // alta provisional, correlativa al último
-      creada = true;        // proveedor/cliente que la app ha tenido que crear
-    }
-    const nombreSub = mapaCP[sub] || nombre;
-    if (k) mapaNif[k] = { sub, nombre: nombreSub };
+    if (k && mapaNif[k]) sub = mapaNif[k].sub;            // ya emparejado y revisado antes
+    if (!sub) { const p = buscaPorNombre(mapaCP, nombre); if (p) { sub = p; nueva = true; } } // por nombre
+    if (!sub) { sub = ""; creada = true; }                // nuevo: NO se crea subcuenta (Monitor da error si la inventa la app)
 
-    // Gemelo de gasto/ingreso (código determinista; nombre del listado real)
-    const giCode = codigoGemelo(sub);
-    const mapaGI = esCompra ? gasto : ingreso;
-    let giNombre = mapaGI[giCode] || "";
-    let giNueva = false;
-    if (giCode && !giNombre) { mapaGI[giCode] = nombre; giNombre = nombre; giNueva = true; }
-    // Descuadre: el gemelo existe pero su nombre no se parece a la contraparte
-    const giDescuadre = !!giNombre && normNombre(giNombre) !== normNombre(nombreSub);
+    const nombreSub = (sub && mapaCP[sub]) || nombre;
+    if (k && sub) mapaNif[k] = { sub, nombre: nombreSub };
 
-    return { sub, nombreSub, nueva, creada, giCode, giNombre, giNueva, giDescuadre };
+    // Contrapartida de gasto/ingreso: se BUSCA en el listado por nombre, NO por el sufijo
+    // (la terminación no siempre coincide). Si no aparece, en blanco + aviso.
+    const giCode = sub ? (buscaPorNombre(mapaGI, nombreSub) || "") : "";
+    const giNombre = giCode ? mapaGI[giCode] : "";
+    const giNueva = !!sub && !giCode; // existe el cliente/proveedor pero su contrapartida no está en el listado
+
+    return { sub, nombreSub, nueva, creada, giCode, giNombre, giNueva, giDescuadre: false };
   }
 
   return { asigna, dump: () => mapaNif };
@@ -188,16 +177,17 @@ export function validarFilaSL(row, tri, anio) {
   if (!row.numero) issues.push({ lv: "warn", msg: "Falta el número de factura" });
   if (!isFinite(base)) issues.push({ lv: "err", msg: "Base imponible no numérica" });
   if (!isFinite(iva)) issues.push({ lv: "err", msg: "Importe de IVA no numérico" });
-  if (!row.subCP) issues.push({ lv: "err", msg: "Sin subcuenta de cliente/proveedor" });
-  if (!row.subGI) issues.push({ lv: "err", msg: "Sin subcuenta de gasto/ingreso" });
+  if (!row.subCP && !row.subCPCreada) issues.push({ lv: "err", msg: "Sin subcuenta de cliente/proveedor" });
+  if (!row.subGI && !row.subCPCreada && !row.subGINueva) issues.push({ lv: "err", msg: "Sin subcuenta de gasto/ingreso" });
   if (isFinite(tipo) && tipo !== 0 && !row.subIva) issues.push({ lv: "warn", msg: "Sin subcuenta de IVA para ese tipo" });
+  if (!row.subBanco) issues.push({ lv: "warn", msg: "Sin subcuenta de banco (cobro/pago)" });
   if (row.subCPCreada) {
-    const tipo = row.sentido === "venta" ? "CLIENTE" : "PROVEEDOR";
-    issues.push({ lv: "warn", msg: `⚠ ${tipo} NUEVO: no estaba en el listado. Se han creado las subcuentas ${row.subCP} (y gasto/ingreso ${row.subGI}) correlativas a la última. Revísalas antes de exportar.` });
+    const quien = row.sentido === "venta" ? "CLIENTE" : "PROVEEDOR";
+    issues.push({ lv: "warn", msg: `⚠ ${quien} NUEVO: no está en el listado. Deja la subcuenta y su contrapartida EN BLANCO — Monitor las crea al importar. (Si la app pusiera una subcuenta inventada, daría error.)` });
   } else if (row.subCPNueva) {
     issues.push({ lv: "warn", msg: `Subcuenta ${row.subCP} emparejada por nombre: confirma que es la correcta` });
   }
-  if (row.subGIDescuadre) issues.push({ lv: "warn", msg: `La cuenta de gasto/ingreso (${row.subGINombre}) no coincide con la contraparte` });
+  if (row.subGINueva && !row.subCPCreada) issues.push({ lv: "warn", msg: "Contrapartida de gasto/ingreso no encontrada en el listado: déjala en blanco (Monitor) o complétala a mano" });
   if (isFinite(base) && isFinite(iva) && isFinite(tipo)) {
     const esp = _r2((base * tipo) / 100);
     if (Math.abs(esp - iva) > 0.02) issues.push({ lv: "warn", msg: `IVA no cuadra: ${base} × ${row.tipoIva}% = ${esp}` });
@@ -218,11 +208,39 @@ export function validarFilaSL(row, tri, anio) {
    C=Nº, D=Fecha (asiento y factura), E=Base, F=Importe IVA, H=%IVA, J=Concepto
    ya quedan donde la plantilla los espera; solo hay que mapear las 3 subcuentas
    nuevas (I=cliente/prov., K=IVA, L=gasto/ingreso). */
+/* Cabeceras del Excel, siguiendo el layout de las plantillas COMPRAS/VENTAS de
+   Monitor (mismas columnas y orden). El banco va en DEBE/HABER (datos de
+   pago/cobro) para que Monitor genere también el asiento de banco. Las columnas
+   opcionales que no automatizamos (domicilio, R.E., IRPF, rectificativa) van en
+   blanco. Concepto = el que clasifica la app desde la factura (no texto manual). */
 export const SL_HEADERS = [
-  "Nombre", "NIF", "Nº factura", "Fecha",
-  "Base imponible", "Importe IVA", "Total", "% IVA",
-  "Subcuenta cliente/proveedor", "Concepto", "Subcuenta de IVA", "Subcuenta de gasto/ingreso",
-  "Subcuenta banco", "Subcuenta recargo", "Subcuenta retención",
+  "FECHA ASIENTO",                  // A
+  "FECHA FACTURA",                  // B
+  "Nº FACTURA",                     // C
+  "CONCEPTO",                       // D
+  "SUBCUENTA CLIENTE/PROVEEDOR",    // E
+  "CIF/NIF",                        // F
+  "NOMBRE",                         // G
+  "DOMICILIO",                      // H
+  "LOCALIDAD",                      // I
+  "PROVINCIA",                      // J
+  "C.P.",                           // K
+  "BASE",                           // L
+  "%IVA/IGIC",                      // M
+  "CUOTA IVA/IGIC",                 // N
+  "SUBCUENTA IVA/IGIC",             // O
+  "% R.E.",                         // P
+  "IMPORTE R.E.",                   // Q
+  "SUBCUENTA R.E.",                 // R
+  "% IRPF/RETENCIÓN",               // S
+  "CUOTA IRPF/RETENCIÓN",           // T
+  "SUBCUENTA IRPF/RETENCIÓN",       // U
+  "RECTIFICATIVA",                  // V
+  "SUBCUENTA GASTO/INGRESO",        // W
+  "IMPORTE GASTO/INGRESO",          // X
+  "DEBE",                           // Y
+  "HABER",                          // Z
+  "TOTAL",                          // AA
 ];
 
 /* ---------- Banco (contrapartida de cobro/pago) por contabilidad ----------

@@ -1177,27 +1177,35 @@ export default function App() {
     });
     const aoa = [SL_HEADERS];
     orden.forEach((r) => {
+      const esCompra = r.sentido !== "venta";
+      const base = num(r.base);
+      // Banco a la manera de Monitor (datos de pago/cobro):
+      //   compra → DEBE proveedor / HABER banco · venta → DEBE banco / HABER cliente
+      const debe = esCompra ? (r.subCP || "") : (r.subBanco || "");
+      const haber = esCompra ? (r.subBanco || "") : (r.subCP || "");
       aoa.push([
-        r.contraparte, r.nif, r.numero, r.fechaFactura,
-        num(r.base), num(r.cuotaIva), num(r.total), num(r.tipoIva),
-        r.subCP, CONCEPTOS_SL.includes(r.concepto) ? r.concepto : "GASTOS", r.subIva, r.subGI,
-        r.subBanco || "", r.subRe || "", r.subRet || "",
+        r.fechaAsiento, r.fechaFactura, r.numero,
+        CONCEPTOS_SL.includes(r.concepto) ? r.concepto : (esCompra ? "COMPRAS" : "VENTAS"),
+        r.subCP || "", r.nif, r.contraparte,
+        "", "", "", "",                                  // H domicilio, I localidad, J provincia, K c.p.
+        num(r.base), num(r.tipoIva), num(r.cuotaIva), r.subIva || "",
+        "", "", "",                                      // P/Q/R recargo (no automatizado)
+        "", "", "",                                      // S/T/U IRPF/retención (no automatizado)
+        "",                                              // V rectificativa
+        r.subGI || "", isFinite(base) ? base : "",       // W subcuenta gasto/ingreso, X importe gasto/ingreso
+        debe, haber, num(r.total),                       // Y DEBE, Z HABER, AA TOTAL
       ]);
     });
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     const range = XLSX.utils.decode_range(ws["!ref"]);
-    const colsMoneda = [4, 5, 6]; // base, importe IVA, total
+    const colsMoneda = [11, 13, 23, 26]; // BASE, CUOTA IVA, IMPORTE GASTO, TOTAL
     for (let R = 1; R <= range.e.r; R++) {
       colsMoneda.forEach((Ccol) => {
         const cell = ws[XLSX.utils.encode_cell({ r: R, c: Ccol })];
         if (cell && cell.t === "n") cell.z = "#,##0.00";
       });
     }
-    ws["!cols"] = [
-      { wch: 30 }, { wch: 12 }, { wch: 14 }, { wch: 12 },
-      { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 7 },
-      { wch: 18 }, { wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 14 },
-    ];
+    ws["!cols"] = SL_HEADERS.map((h) => ({ wch: Math.max(9, Math.min(20, h.length + 1)) }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "CONVERSOR");
     const limpio = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
@@ -1814,7 +1822,7 @@ export default function App() {
                     const hayWarn = iss.some((i) => i.lv === "warn");
                     const fondo = hayErr ? C.errBg : hayWarn ? C.warnBg : idx % 2 ? "#FCFAF4" : C.papel;
                     const subCPbg = (r.subCPNueva || r.subCPCreada) ? C.warnBg : C.papel;
-                    const subGIbg = (r.subGINueva || r.subGIDescuadre) ? C.warnBg : C.papel;
+                    const subGIbg = r.subGINueva ? C.warnBg : C.papel;
                     const fueraTrimSL = fechaValida(r.fechaFactura) && !fechaEnTrimestre(r.fechaFactura, trimestreSel, anioSel);
                     return (
                       <React.Fragment key={r.id}>
@@ -1892,14 +1900,14 @@ export default function App() {
                 </span>
               )}
               <span style={{ fontSize: 12, color: C.gris, marginLeft: "auto" }}>
-                Excel para el Conversor (A=Nombre, B=NIF, C=Nº, D=Fecha, E=Base, F=Importe IVA, G=Total, H=%IVA, I=Subcta. C/P, J=Concepto, K=Subcta. IVA, L=Subcta. gasto/ingreso, M=Subcta. banco). Reutiliza tu plantilla y mapea las 4 subcuentas (I, K, L, M).
+                Excel con el layout de las plantillas de Monitor (Fecha asiento · Fecha factura · Nº · Concepto · Subcta. cliente/prov. · NIF · Nombre · … · Base · %IVA · Cuota IVA · Subcta. IVA · … · Subcta. gasto/ingreso · Importe gasto · DEBE · HABER · Total). El <b>banco va en DEBE/HABER</b> (pago/cobro) para que Monitor genere también el asiento de banco. Las subcuentas en blanco (cliente/proveedor nuevo) las crea Monitor al importar.
               </span>
             </div>
           </section>
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.6 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.7 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
