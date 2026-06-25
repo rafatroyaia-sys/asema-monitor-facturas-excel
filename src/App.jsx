@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import {
   CONTABILIDADES_SL, crearAsignador, cargarMapaNif, guardarMapaNif,
-  subIva, validarFilaSL, SL_HEADERS, conceptoConversor, CONCEPTOS_SL,
+  subIva, validarFilaSL, SL_HEADERS_COMPRAS, SL_HEADERS_VENTAS, conceptoConversor, CONCEPTOS_SL,
   cargarBanco, guardarBanco,
 } from "./sl";
 
@@ -1167,17 +1167,19 @@ export default function App() {
   };
 
   /* ----- Exportación al formato del Conversor (doble partida) ----- */
-  const exportarSL = () => {
-    if (!rowsSL.length) return;
+  const exportarSL = (tipo) => {
+    const esCompra = tipo === "compra";
+    const filas = rowsSL.filter((r) => (esCompra ? r.sentido !== "venta" : r.sentido === "venta"));
+    if (!filas.length) { setSlMsg(`No hay ${esCompra ? "compras" : "ventas"} en la tabla para exportar.`); return; }
     const ent = CONTABILIDADES_SL.find((e) => e.id === contabSelId);
-    const orden = [...rowsSL].sort((a, b) => {
+    const orden = [...filas].sort((a, b) => {
       const f = fechaKey(a.fechaFactura).localeCompare(fechaKey(b.fechaFactura));
       if (f !== 0) return f;
       return String(a.numero).localeCompare(String(b.numero), "es");
     });
-    const aoa = [SL_HEADERS];
+    const headers = esCompra ? SL_HEADERS_COMPRAS : SL_HEADERS_VENTAS;
+    const aoa = [headers];
     orden.forEach((r) => {
-      const esCompra = r.sentido !== "venta";
       const base = num(r.base);
       // Banco a la manera de Monitor (datos de pago/cobro):
       //   compra → DEBE proveedor / HABER banco · venta → DEBE banco / HABER cliente
@@ -1205,14 +1207,14 @@ export default function App() {
         if (cell && cell.t === "n") cell.z = "#,##0.00";
       });
     }
-    ws["!cols"] = SL_HEADERS.map((h) => ({ wch: Math.max(9, Math.min(20, h.length + 1)) }));
+    ws["!cols"] = headers.map((h) => ({ wch: Math.max(9, Math.min(20, h.length + 1)) }));
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "CONVERSOR");
+    XLSX.utils.book_append_sheet(wb, ws, esCompra ? "COMPRAS" : "VENTAS");
     const limpio = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
     const ahora = new Date();
     const sello = `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, "0")}-${String(ahora.getDate()).padStart(2, "0")}_${String(ahora.getHours()).padStart(2, "0")}${String(ahora.getMinutes()).padStart(2, "0")}`;
     const cli = limpio((ent && (ent.centro ? ent.nombre + " " + ent.centro : ent.nombre)) || "SL");
-    XLSX.writeFile(wb, `CONVERSOR_${cli}_${trimestreSel}T${anioSel}_${sello}.xlsx`);
+    XLSX.writeFile(wb, `CONVERSOR_${esCompra ? "COMPRAS" : "VENTAS"}_${cli}_${trimestreSel}T${anioSel}_${sello}.xlsx`);
   };
 
   /* ----- Estilos reutilizables ----- */
@@ -1891,8 +1893,21 @@ export default function App() {
             </div>
 
             <div className="mt-5 flex items-center gap-4 flex-wrap">
-              <button style={{ ...btn(true), opacity: nErrSL > 0 ? 0.85 : 1 }} onClick={exportarSL}>
-                <Download size={16} /> Exportar Excel para el Conversor
+              <button
+                style={{ ...btn(true), opacity: rowsSL.some((r) => r.sentido !== "venta") ? 1 : 0.4 }}
+                disabled={!rowsSL.some((r) => r.sentido !== "venta")}
+                onClick={() => exportarSL("compra")}
+                title="Exporta solo las compras, con la plantilla COMPRAS de Monitor"
+              >
+                <Download size={16} /> Exportar COMPRAS
+              </button>
+              <button
+                style={{ ...btn(true), opacity: rowsSL.some((r) => r.sentido === "venta") ? 1 : 0.4 }}
+                disabled={!rowsSL.some((r) => r.sentido === "venta")}
+                onClick={() => exportarSL("venta")}
+                title="Exporta solo las ventas, con la plantilla VENTAS de Monitor"
+              >
+                <Download size={16} /> Exportar VENTAS
               </button>
               {nErrSL > 0 && (
                 <span style={{ fontSize: 12.5, color: C.err, display: "flex", alignItems: "center", gap: 6 }}>
@@ -1907,7 +1922,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.7 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.8 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>

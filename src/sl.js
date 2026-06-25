@@ -208,39 +208,25 @@ export function validarFilaSL(row, tri, anio) {
    C=Nº, D=Fecha (asiento y factura), E=Base, F=Importe IVA, H=%IVA, J=Concepto
    ya quedan donde la plantilla los espera; solo hay que mapear las 3 subcuentas
    nuevas (I=cliente/prov., K=IVA, L=gasto/ingreso). */
-/* Cabeceras del Excel, siguiendo el layout de las plantillas COMPRAS/VENTAS de
-   Monitor (mismas columnas y orden). El banco va en DEBE/HABER (datos de
-   pago/cobro) para que Monitor genere también el asiento de banco. Las columnas
-   opcionales que no automatizamos (domicilio, R.E., IRPF, rectificativa) van en
-   blanco. Concepto = el que clasifica la app desde la factura (no texto manual). */
-export const SL_HEADERS = [
-  "FECHA ASIENTO",                  // A
-  "FECHA FACTURA",                  // B
-  "Nº FACTURA",                     // C
-  "CONCEPTO",                       // D
-  "SUBCUENTA CLIENTE/PROVEEDOR",    // E
-  "CIF/NIF",                        // F
-  "NOMBRE",                         // G
-  "DOMICILIO",                      // H
-  "LOCALIDAD",                      // I
-  "PROVINCIA",                      // J
-  "C.P.",                           // K
-  "BASE",                           // L
-  "%IVA/IGIC",                      // M
-  "CUOTA IVA/IGIC",                 // N
-  "SUBCUENTA IVA/IGIC",             // O
-  "% R.E.",                         // P
-  "IMPORTE R.E.",                   // Q
-  "SUBCUENTA R.E.",                 // R
-  "% IRPF/RETENCIÓN",               // S
-  "CUOTA IRPF/RETENCIÓN",           // T
-  "SUBCUENTA IRPF/RETENCIÓN",       // U
-  "RECTIFICATIVA",                  // V
-  "SUBCUENTA GASTO/INGRESO",        // W
-  "IMPORTE GASTO/INGRESO",          // X
-  "DEBE",                           // Y
-  "HABER",                          // Z
-  "TOTAL",                          // AA
+/* Cabeceras del Excel siguiendo las plantillas oficiales de Monitor. Se exporta
+   COMPRAS y VENTAS POR SEPARADO (el despacho las contabiliza por separado), cada
+   una con su cabecera. Misma estructura (27 columnas A-AA); el banco va en
+   DEBE/HABER (pago/cobro) para que Monitor genere el asiento de banco. Las
+   columnas opcionales que no automatizamos (domicilio, R.E., IRPF, rectificativa)
+   van en blanco. Concepto = el que clasifica la app desde la factura. */
+export const SL_HEADERS_COMPRAS = [
+  "FECHA ASIENTO", "FECHA FACTURA", "Nº FACTURA", "CONCEPTO",
+  "SUBCUENTA PROVEEDOR", "CIF/NIF", "NOMBRE", "DOMICILIO", "LOCALIDAD", "PROVINCIA", "C.P.",
+  "BASE", "%IVA/IGIC", "CUOTA IVA/IGIC", "SUBCUENTA IVA/IGIC",
+  "% R.E.", "IMPORTE R.E.", "SUBCUENTA R.E.", "% IRPF", "CUOTA IRPF", "SUBCUENTA IRPF",
+  "RECTIFICATIVA", "SUBCUENTA GASTO", "IMPORTE GASTO/INGRESO", "DEBE", "HABER", "TOTAL FRA.",
+];
+export const SL_HEADERS_VENTAS = [
+  "FECHA ASIENTO", "FECHA FACTURA", "Nº FACTURA", "CONCEPTO",
+  "SUBCUENTA CLIENTE", "CIF/NIF CLIENTE", "NOMBRE", "DOMICILIO", "LOCALIDAD", "PROVINCIA", "C.P. CLIENTE",
+  "BASE", "% IVA/IGIC", "CUOTA IVA/IGIC", "SUBCUENTA IVA/IGIC",
+  "% RE", "CUOTA RE", "SUBCUENTA RE", "% RETENCIÓN", "IMPORTE RETEN", "SUBCUENTA RETENCION",
+  "RECTIFICATIVA", "SUBCUENTA INGRESO", "BASE", "DEBE", "HABER", "TOTAL",
 ];
 
 /* ---------- Banco (contrapartida de cobro/pago) por contabilidad ----------
