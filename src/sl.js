@@ -122,13 +122,15 @@ export function crearAsignador(ent, mapaNifInicial) {
     const esCompra = sentido === "compra";
     const mapaCP = esCompra ? prov : cli;
     const mapaGI = esCompra ? gasto : ingreso;
+    const nifSeed = esCompra ? (ent.nifProveedor || {}) : (ent.nifCliente || {}); // NIF→subcuenta del listado
     const k = nif && nif !== "0" ? nif : null;
 
     let sub = null;
     let nueva = false;  // emparejada por nombre (existe en el listado, falta confirmar el NIF)
     let creada = false; // NO está en el listado → subcuenta EN BLANCO + aviso (Monitor la crea al importar)
 
-    if (k && mapaNif[k]) sub = mapaNif[k].sub;            // ya emparejado y revisado antes
+    if (k && mapaNif[k]) sub = mapaNif[k].sub;            // ya emparejado y revisado antes (localStorage)
+    if (!sub && k && nifSeed[k]) sub = nifSeed[k];        // NIF está en el listado → confirmado, no es nuevo
     if (!sub) { const p = buscaPorNombre(mapaCP, nombre); if (p) { sub = p; nueva = true; } } // por nombre
     if (!sub) { sub = ""; creada = true; }                // nuevo: NO se crea subcuenta (Monitor da error si la inventa la app)
 
@@ -188,7 +190,12 @@ export function validarFilaSL(row, tri, anio) {
     issues.push({ lv: "warn", msg: `Subcuenta ${row.subCP} emparejada por nombre: confirma que es la correcta` });
   }
   if (row.subGINueva && !row.subCPCreada) issues.push({ lv: "warn", msg: "Contrapartida de gasto/ingreso no encontrada en el listado: déjala en blanco (Monitor) o complétala a mano" });
-  if (isFinite(base) && isFinite(iva) && isFinite(tipo)) {
+  // IVA cero: Monitor NO admite IVA 0 → error en ROJO (no se puede exportar así)
+  if (isFinite(base) && base !== 0 && ((isFinite(tipo) && tipo === 0) || (isFinite(iva) && iva === 0))) {
+    issues.push({ lv: "err", msg: "IVA 0: Monitor no admite IVA cero. Pon el tipo de IVA correcto antes de exportar." });
+  }
+  // IVA que no cuadra con la base → aviso ámbar
+  if (isFinite(base) && isFinite(iva) && isFinite(tipo) && tipo !== 0) {
     const esp = _r2((base * tipo) / 100);
     if (Math.abs(esp - iva) > 0.02) issues.push({ lv: "warn", msg: `IVA no cuadra: ${base} × ${row.tipoIva}% = ${esp}` });
   }

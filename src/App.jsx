@@ -405,7 +405,7 @@ function facturasASLRows(facturas, fileName, ent, asignador, tri, anio, banco) {
     const invoiceId = uid();
     // Entidades "solo ingresos" (p.ej. Matilde Mateos): todo se registra como venta
     const sentido = ent.soloIngresos ? "venta" : (Number(f.cuenta) === 1 ? "venta" : "compra");
-    const nif = (f.nif || "0").toUpperCase().replace(/[\s\-\.]/g, "");
+    const nif = limpiaNif(f.nif); // mismo formato que los NIF del listado (sin ES, espacios, puntos…)
     const contraparte = (f.contraparte || "").toUpperCase().trim();
     const fechaAj = ajustaFechaATrimestre(f.fecha, tri, anio); // traslada al trimestre si cae fuera
     const asg = asignador.asigna({ nif, nombre: contraparte, sentido });
@@ -1922,7 +1922,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.8 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v2.9 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
