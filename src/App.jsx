@@ -409,7 +409,12 @@ function facturasASLRows(facturas, fileName, ent, asignador, tri, anio, banco) {
     const contraparte = (f.contraparte || "").toUpperCase().trim();
     const fechaAj = ajustaFechaATrimestre(f.fecha, tri, anio); // traslada al trimestre si cae fuera
     const asg = asignador.asigna({ nif, nombre: contraparte, sentido });
-    const lineas = Array.isArray(f.lineas) && f.lineas.length ? f.lineas : [{}];
+    let lineas = Array.isArray(f.lineas) && f.lineas.length ? f.lineas : [{}];
+    // Descartar líneas FANTASMA sin base: la IA a veces añade una fila con base
+    // 0 / IVA 21% / cuota 0 que Monitor rechaza. Si la base es 0 no se pone.
+    // Si tras filtrar no queda ninguna, mantenemos las originales (no perder la factura).
+    const conBase = lineas.filter((l) => { const b = num(l.base); return isFinite(b) && b !== 0; });
+    if (conBase.length) lineas = conBase;
     const ret = num(f.cuota_ret) || 0;
     lineas.forEach((l, idx) => {
       const base = num(l.base);
@@ -1922,7 +1927,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.1 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.2 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
