@@ -84,6 +84,14 @@ export function subIva(tipo, sentido, ent) {
   return (mapa && mapa[key]) || "";
 }
 
+/* Tipo de recargo de equivalencia → subcuenta (solo entidades con recargoPorTipo,
+   p.ej. Bruzón: 1,4% → 477…014, 5,2% → 477…520). Sin recargo → "". */
+export function subRecargo(tipo, ent) {
+  const t = Number(String(tipo).replace(",", "."));
+  if (!isFinite(t) || t === 0) return "";
+  return (ent.recargoPorTipo && ent.recargoPorTipo[String(t)]) || "";
+}
+
 /* Siguiente código libre y correlativo dentro de una raíz (p.ej. "40000000").
    Solo mira los códigos de esa raíz densa, así no salta a subcuentas genéricas
    del PGC (40040000000 "moneda extranjera", 40090000000 "pendientes"...). */

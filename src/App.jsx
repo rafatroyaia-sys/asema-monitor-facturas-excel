@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import {
   CONTABILIDADES_SL, crearAsignador, cargarMapaNif, guardarMapaNif,
-  subIva, validarFilaSL, SL_HEADERS_COMPRAS, SL_HEADERS_VENTAS, conceptoConversor, CONCEPTOS_SL,
+  subIva, subRecargo, validarFilaSL, SL_HEADERS_COMPRAS, SL_HEADERS_VENTAS, conceptoConversor, CONCEPTOS_SL,
   cargarBanco, guardarBanco,
 } from "./sl";
 
@@ -434,6 +434,7 @@ function facturasASLRows(facturas, fileName, ent, asignador, tri, anio, banco) {
         base: toInput(base),
         tipoIva: toInputPct(tipoIva),
         cuotaIva: toInput(iva),
+        tipoRe: toInputPct(l.tipo_re ?? 0),
         cuotaRe: toInput(re),
         cuotaRet: toInput(retFila),
         total: toInput(total),
@@ -473,7 +474,7 @@ function listadoMatildeASLRows(items, fileName, ent, asignador, tri, anio, banco
       numero: String(f.numero ?? "").trim(),
       fechaFactura: fechaAj, fechaAsiento: fechaAj,
       base: toInput(base), tipoIva: toInputPct(tipoIva), cuotaIva: toInput(iva),
-      cuotaRe: "0,00", cuotaRet: "0,00",
+      tipoRe: "0", cuotaRe: "0,00", cuotaRet: "0,00",
       total: toInput(total),
       concepto: "VENTAS",
       subCP: asg.sub, subCPNombre: asg.nombreSub, subCPNueva: asg.nueva, subCPCreada: asg.creada,
@@ -1190,13 +1191,16 @@ export default function App() {
       //   compra → DEBE proveedor / HABER banco · venta → DEBE banco / HABER cliente
       const debe = esCompra ? (r.subCP || "") : (r.subBanco || "");
       const haber = esCompra ? (r.subBanco || "") : (r.subCP || "");
+      // Recargo de equivalencia: solo en VENTAS (a clientes persona física), si la factura lo trae
+      const reNum = num(r.cuotaRe) || 0;
+      const hayRe = !esCompra && reNum !== 0;
       aoa.push([
         r.fechaAsiento, r.fechaFactura, r.numero,
         CONCEPTOS_SL.includes(r.concepto) ? r.concepto : (esCompra ? "COMPRAS" : "VENTAS"),
         r.subCP || "", r.nif, r.contraparte,
         "", "", "", "",                                  // H domicilio, I localidad, J provincia, K c.p.
         num(r.base), num(r.tipoIva), num(r.cuotaIva), r.subIva || "",
-        "", "", "",                                      // P/Q/R recargo (no automatizado)
+        hayRe ? num(r.tipoRe) : "", hayRe ? reNum : "", hayRe ? subRecargo(r.tipoRe, ent) : "", // P %RE, Q cuota RE, R subcta RE
         "", "", "",                                      // S/T/U IRPF/retención (no automatizado)
         "",                                              // V rectificativa
         r.subGI || "", isFinite(base) ? base : "",       // W subcuenta gasto/ingreso, X importe gasto/ingreso
@@ -1205,7 +1209,7 @@ export default function App() {
     });
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     const range = XLSX.utils.decode_range(ws["!ref"]);
-    const colsMoneda = [11, 13, 23, 26]; // BASE, CUOTA IVA, IMPORTE GASTO, TOTAL
+    const colsMoneda = [11, 13, 16, 23, 26]; // BASE, CUOTA IVA, CUOTA RE, IMPORTE GASTO, TOTAL
     for (let R = 1; R <= range.e.r; R++) {
       colsMoneda.forEach((Ccol) => {
         const cell = ws[XLSX.utils.encode_cell({ r: R, c: Ccol })];
@@ -1813,6 +1817,8 @@ export default function App() {
                     <th style={{ ...th, width: 95, textAlign: "right" }}>Base</th>
                     <th style={{ ...th, width: 56, textAlign: "right" }}>% IVA</th>
                     <th style={{ ...th, width: 92, textAlign: "right" }}>Importe IVA</th>
+                    {entSLSel?.recargoPorTipo && <th style={{ ...th, width: 56, textAlign: "right" }}>% RE</th>}
+                    {entSLSel?.recargoPorTipo && <th style={{ ...th, width: 85, textAlign: "right" }}>Cuota RE</th>}
                     <th style={{ ...th, width: 95, textAlign: "right" }}>Total</th>
                     <th style={{ ...th, minWidth: 150 }}>Concepto</th>
                     <th style={{ ...th, width: 132 }}>Subcta. cliente/prov.</th>
@@ -1850,6 +1856,8 @@ export default function App() {
                           <td style={{ padding: 3 }}><input style={inputNum} value={r.base} onChange={(e) => updSL(r.id, "base", e.target.value)} /></td>
                           <td style={{ padding: 3 }}><input style={inputNum} value={r.tipoIva} onChange={(e) => updSL(r.id, "tipoIva", e.target.value)} /></td>
                           <td style={{ padding: 3 }}><input style={inputNum} value={r.cuotaIva} onChange={(e) => updSL(r.id, "cuotaIva", e.target.value)} /></td>
+                          {entSLSel?.recargoPorTipo && <td style={{ padding: 3 }}><input style={inputNum} value={r.tipoRe ?? "0"} onChange={(e) => updSL(r.id, "tipoRe", e.target.value)} /></td>}
+                          {entSLSel?.recargoPorTipo && <td style={{ padding: 3 }}><input style={inputNum} value={r.cuotaRe ?? "0,00"} onChange={(e) => updSL(r.id, "cuotaRe", e.target.value)} /></td>}
                           <td style={{ padding: 3 }}><input style={{ ...inputNum, fontWeight: 700 }} value={r.total} onChange={(e) => updSL(r.id, "total", e.target.value)} /></td>
                           <td style={{ padding: 3 }}>
                             <select style={{ ...inputBase, fontWeight: 600 }} value={CONCEPTOS_SL.includes(r.concepto) ? r.concepto : "GASTOS"} onChange={(e) => updSL(r.id, "concepto", e.target.value)}>
@@ -1884,7 +1892,7 @@ export default function App() {
                         {iss.length > 0 && (
                           <tr style={{ background: fondo }}>
                             <td></td>
-                            <td colSpan={15} style={{ padding: "0 6px 7px", fontSize: 11.5, color: hayErr ? C.err : C.warn }}>
+                            <td colSpan={entSLSel?.recargoPorTipo ? 17 : 15} style={{ padding: "0 6px 7px", fontSize: 11.5, color: hayErr ? C.err : C.warn }}>
                               {iss.map((i, k) => (<span key={k} style={{ marginRight: 14 }}>• {i.msg}</span>))}
                               <span style={{ color: C.gris }}>· origen: {r.fileName}</span>
                             </td>
@@ -1927,7 +1935,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.2 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.3 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
