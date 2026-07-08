@@ -88,6 +88,10 @@ const cuentaLetra = (n) => {
    El detalle fino se conserva en la columna CUENTA (letra) y en la CLAVE. */
 const conceptoPorCuenta = (n) => conceptoConversor(n);
 
+/* Conceptos válidos en la pestaña de autónomos: los 4 de Monitor + "INGRESOS POR
+   SUPLIDOS" (ingresos de suplidos refacturados, sin IVA ni retención). */
+const CONCEPTOS_FACTURAS = [...CONCEPTOS_SL, "INGRESOS POR SUPLIDOS"];
+
 /* ---------- Claves de gastos diversos (cuenta 10) ---------- */
 const CLAVES = [
   { k: "", t: "— sin clave —" },
@@ -391,6 +395,28 @@ function facturasARows(facturas, fileName, tri, anio) {
         obs: f.obs || "",
       });
     });
+    // Suplidos (p.ej. Lyliane del Toro): ingreso APARTE, sin IVA ni retención, en su propio apunte.
+    // Solo en facturas de ingreso (cuenta 1 = ventas del titular).
+    const suplidos = num(f.suplidos) || 0;
+    if (suplidos > 0 && Number(f.cuenta) === 1) {
+      rows.push({
+        id: uid(), invoiceId, fileName,
+        contraparte: (f.contraparte || "").toUpperCase().trim(),
+        nif: (f.nif || "0").toUpperCase().replace(/[\s\-\.]/g, ""),
+        numero: String(f.numero ?? "").trim(),
+        fecha: ajustaFechaATrimestre(f.fecha, tri, anio),
+        base: toInput(suplidos),
+        tipoIva: "0", cuotaIva: "0,00",
+        tipoRe: "0", cuotaRe: "0,00",
+        tipoRet: "0", cuotaRet: "0,00",
+        total: toInput(suplidos),
+        cuenta: 1,
+        concepto: "INGRESOS POR SUPLIDOS",
+        clave: "",
+        confianza: f.confianza || "media",
+        obs: "Ingreso por suplidos (sin IVA ni retención)",
+      });
+    }
   });
   return rows;
 }
@@ -1722,8 +1748,8 @@ export default function App() {
                             </select>
                           </td>
                           <td style={{ padding: 3 }}>
-                            <select style={{ ...inputBase, fontWeight: 600 }} value={CONCEPTOS_SL.includes(r.concepto) ? r.concepto : "GASTOS"} onChange={(e) => upd(r.id, "concepto", e.target.value)}>
-                              {CONCEPTOS_SL.map((c) => (<option key={c} value={c}>{c}</option>))}
+                            <select style={{ ...inputBase, fontWeight: 600 }} value={CONCEPTOS_FACTURAS.includes(r.concepto) ? r.concepto : "GASTOS"} onChange={(e) => upd(r.id, "concepto", e.target.value)}>
+                              {CONCEPTOS_FACTURAS.map((c) => (<option key={c} value={c}>{c}</option>))}
                             </select>
                           </td>
                           <td style={{ padding: 3 }}>
@@ -1935,7 +1961,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.3 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.4 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>

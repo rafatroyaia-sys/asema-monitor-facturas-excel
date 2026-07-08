@@ -37,13 +37,14 @@ REGLAS DE EXTRACCIÓN:
 - "fecha": fecha de expedición de la factura en formato dd/mm/aaaa.
 - Retención IRPF (típica de profesionales y alquileres): "tipo_ret" (%) y "cuota_ret" (importe, positivo). Si no hay, 0 y 0.
 - Recargo de equivalencia, si aparece, por línea: "tipo_re" (%) y "cuota_re". Si no hay, 0 y 0.
+- SUPLIDOS: si la factura refactura "suplidos" o "gastos y suplidos" (importes pagados por cuenta del cliente: tasas, comidas, entradas, desplazamientos, museos, mercado...), NO llevan IVA ni retención y NO forman parte de la base imponible ni de "lineas". Pon la SUMA total de esos suplidos en el campo "suplidos" (número). Si no hay, 0.
 - "total": importe total a pagar/cobrar de la factura tal como figura en el documento.
 - "numero": número de factura tal como figura (con su serie si la tiene).
 - Si un dato es ilegible o no consta: usa null en ese campo, marca "confianza":"baja" y explica en "obs" qué falta.
 - "confianza": "alta", "media" o "baja" según la legibilidad del escaneo y la seguridad de la clasificación.
 
 FORMATO EXACTO DE RESPUESTA (solo este JSON):
-{"facturas":[{"contraparte":"NOMBRE","nif":"B11111111","numero":"A-123","fecha":"01/09/2025","lineas":[{"base":100.00,"tipo_iva":21,"cuota_iva":21.00,"tipo_re":0,"cuota_re":0}],"tipo_ret":0,"cuota_ret":0,"total":121.00,"cuenta":10,"clave":"O","confianza":"alta","obs":""}]}`;
+{"facturas":[{"contraparte":"NOMBRE","nif":"B11111111","numero":"A-123","fecha":"01/09/2025","lineas":[{"base":100.00,"tipo_iva":21,"cuota_iva":21.00,"tipo_re":0,"cuota_re":0}],"tipo_ret":0,"cuota_ret":0,"suplidos":0,"total":121.00,"cuenta":10,"clave":"O","confianza":"alta","obs":""}]}`;
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
