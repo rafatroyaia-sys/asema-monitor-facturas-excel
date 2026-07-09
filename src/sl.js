@@ -66,6 +66,13 @@ export function conceptoConversor(cuenta) {
   return "GASTOS"; // alquileres, primas, gastos diversos y cualquier otro gasto
 }
 
+/* ¿Dos nombres se parecen? (mismo tras normalizar, o uno contiene al otro). */
+export function nombresSimilares(a, b) {
+  const x = normNombre(a), y = normNombre(b);
+  if (!x || !y) return false;
+  return x === y || (x.length > 2 && y.length > 2 && (x.includes(y) || y.includes(x)));
+}
+
 /* Subcuenta de gasto/ingreso GEMELA de la de proveedor/cliente:
    400→600, 430→700, conservando el sufijo. El código es determinista. */
 const PREFIJO_GEMELO = { 400: "600", 430: "700" };
@@ -145,9 +152,20 @@ export function crearAsignador(ent, mapaNifInicial) {
     const nombreSub = (sub && mapaCP[sub]) || nombre;
     if (k && sub) mapaNif[k] = { sub, nombre: nombreSub };
 
-    // Contrapartida de gasto/ingreso: se BUSCA en el listado por nombre, NO por el sufijo
-    // (la terminación no siempre coincide). Si no aparece, en blanco + aviso.
-    const giCode = sub ? (buscaPorNombre(mapaGI, nombreSub) || "") : "";
+    // Contrapartida de gasto/ingreso:
+    //  1) Si la entidad define un gemelo de prefijo (p.ej. Matilde clientes 430 → ingreso 705),
+    //     se usa ese código SOLO si existe en el listado Y su nombre se parece a la contraparte
+    //     (así no se cuela un gemelo roto tipo 600...030 = otra empresa).
+    //  2) Si no, se busca en el listado por nombre. Si no aparece, en blanco (Monitor la crea).
+    let giCode = "";
+    if (sub) {
+      const pref = ent.contrapartidaPref && ent.contrapartidaPref[String(sub).slice(0, 3)];
+      if (pref) {
+        const gem = pref + String(sub).slice(3);
+        if (mapaGI[gem] && nombresSimilares(mapaGI[gem], nombreSub)) giCode = gem;
+      }
+      if (!giCode) giCode = buscaPorNombre(mapaGI, nombreSub) || "";
+    }
     const giNombre = giCode ? mapaGI[giCode] : "";
     const giNueva = !!sub && !giCode; // existe el cliente/proveedor pero su contrapartida no está en el listado
 
