@@ -429,8 +429,9 @@ function facturasASLRows(facturas, fileName, ent, asignador, tri, anio, banco) {
   const rows = [];
   facturas.forEach((f) => {
     const invoiceId = uid();
-    // Entidades "solo ingresos" (p.ej. Matilde Mateos): todo se registra como venta
-    const sentido = ent.soloIngresos ? "venta" : (Number(f.cuenta) === 1 ? "venta" : "compra");
+    // Facturas escaneadas: sentido según la clasificación de la IA (los ingresos de
+    // Matilde entran por su importador de listado, no por aquí).
+    const sentido = Number(f.cuenta) === 1 ? "venta" : "compra";
     const nif = limpiaNif(f.nif); // mismo formato que los NIF del listado (sin ES, espacios, puntos…)
     const contraparte = (f.contraparte || "").toUpperCase().trim();
     const fechaAj = ajustaFechaATrimestre(f.fecha, tri, anio); // traslada al trimestre si cae fuera
@@ -464,7 +465,7 @@ function facturasASLRows(facturas, fileName, ent, asignador, tri, anio, banco) {
         cuotaRe: toInput(re),
         cuotaRet: toInput(retFila),
         total: toInput(total),
-        concepto: ent.soloIngresos ? "VENTAS" : conceptoConversor(f.cuenta), // 4 conceptos del Conversor
+        concepto: conceptoConversor(f.cuenta), // COMPRAS/VENTAS/GASTOS/ENERGIA según la IA
         subCP: asg.sub, subCPNombre: asg.nombreSub, subCPNueva: asg.nueva, subCPCreada: asg.creada,
         subGI: asg.giCode, subGINombre: asg.giNombre, subGINueva: asg.giNueva, subGIDescuadre: asg.giDescuadre,
         subIva: subIva(tipoIva, sentido, ent),
@@ -1419,7 +1420,7 @@ export default function App() {
                     Listado: <b style={{ color: C.tinta }}>{Object.keys(entSL.proveedores || {}).length}</b> proveedores ·{" "}
                     <b style={{ color: C.tinta }}>{Object.keys(entSL.clientes || {}).length}</b> clientes ·{" "}
                     <b style={{ color: C.tinta }}>{nCtas}</b> cuentas de gasto/ingreso.
-                    {entSL.soloIngresos && <span style={{ color: C.vino, fontWeight: 700 }}> · Solo ingresos: todo se registra como VENTA.</span>}
+                    {entSL.soloIngresos && <span style={{ color: C.vino, fontWeight: 700 }}> · Ingresos por listado PDF; los gastos, escaneando las facturas.</span>}
                     {!entSL.nif && <span style={{ color: C.warn }}> Falta el NIF de la sociedad: añádelo para afinar emitida/recibida.</span>}
                   </span>
                 )}
@@ -1513,8 +1514,8 @@ export default function App() {
         </section>
         )}
 
-        {/* ---------- 2 · Facturas (facturas, y SL salvo solo-ingresos) ---------- */}
-        {(modo === "facturas" || (modo === "sl" && !entSLSel?.soloIngresos)) && (
+        {/* ---------- 2 · Facturas escaneadas (facturas y SL; en Matilde, para sus gastos) ---------- */}
+        {(modo === "facturas" || modo === "sl") && (
         <section style={{ background: C.papel, border: `1px solid ${C.linea}`, borderRadius: 12, padding: 20 }}>
           <div className="flex items-center gap-2 mb-4">
             <Upload size={18} style={{ color: C.vino }} />
@@ -1961,7 +1962,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.4 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.5 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
