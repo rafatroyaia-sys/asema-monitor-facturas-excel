@@ -249,28 +249,38 @@ async function extraerFacturas(file, empresa, claveDespacho, onProgreso) {
   }
   const nPag = doc.getPageCount();
 
-  // PDF pequeño: una sola llamada
-  if (nPag <= PAGINAS_POR_BLOQUE) {
-    const b64 = await toB64(file);
-    return pedirBloque(b64, "application/pdf", empresa, claveDespacho);
+  /* Procesa un conjunto de páginas. Si la IA devuelve el JSON cortado ("incompleta"),
+     el bloque tenía demasiadas facturas: se reintenta partiéndolo en dos mitades,
+     recursivamente hasta llegar a 1 página. Así no falla nunca por tamaño y no hay
+     que dividir el PDF a mano. Otros errores (clave, etc.) se propagan tal cual. */
+  async function procesarIndices(indices) {
+    const sub = await PDFDocument.create();
+    const paginas = await sub.copyPages(doc, indices);
+    paginas.forEach((pg) => sub.addPage(pg));
+    const b64 = abToB64(await sub.save());
+    try {
+      return await pedirBloque(b64, "application/pdf", empresa, claveDespacho);
+    } catch (e) {
+      if (/incompleta/i.test(e.message || "") && indices.length > 1) {
+        const mid = Math.ceil(indices.length / 2);
+        const a = await procesarIndices(indices.slice(0, mid));
+        const b = await procesarIndices(indices.slice(mid));
+        return [...a, ...b];
+      }
+      throw e;
+    }
   }
 
-  // PDF grande: trocear en bloques de páginas
+  // Trocear en bloques de páginas (cada bloque se auto-parte si hace falta)
   const todas = [];
   const nBloques = Math.ceil(nPag / PAGINAS_POR_BLOQUE);
   for (let b = 0; b < nBloques; b++) {
     if (onProgreso) onProgreso(b + 1, nBloques);
-    const sub = await PDFDocument.create();
     const ini = b * PAGINAS_POR_BLOQUE;
     const fin = Math.min(ini + PAGINAS_POR_BLOQUE, nPag);
     const indices = [];
     for (let p = ini; p < fin; p++) indices.push(p);
-    const paginas = await sub.copyPages(doc, indices);
-    paginas.forEach((pg) => sub.addPage(pg));
-    const bytes = await sub.save();
-    const b64 = abToB64(bytes);
-    const facturas = await pedirBloque(b64, "application/pdf", empresa, claveDespacho);
-    todas.push(...facturas);
+    todas.push(...await procesarIndices(indices));
   }
   return todas;
 }
@@ -1962,7 +1972,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.7 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.8 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
