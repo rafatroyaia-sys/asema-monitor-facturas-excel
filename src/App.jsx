@@ -10,7 +10,7 @@ import {
 import {
   CONTABILIDADES_SL, crearAsignador, cargarMapaNif, guardarMapaNif,
   subIva, subRecargo, validarFilaSL, SL_HEADERS_COMPRAS, SL_HEADERS_VENTAS, conceptoConversor, CONCEPTOS_SL,
-  cargarBanco, guardarBanco,
+  cargarBanco, guardarBanco, normNombre,
 } from "./sl";
 
 /* ============================================================
@@ -332,8 +332,9 @@ async function extraerListadoPDF(file, claveDespacho) {
 }
 
 /* ---------- Listado de INGRESOS (Matilde, doble partida) por IA ---------- */
-async function extraerListadoIngresos(file, claveDespacho) {
-  const b64 = await toB64(file);
+const PAGINAS_LISTADO_INGRESOS = 2; // páginas por llamada (listado muy denso: ~45 facturas/página)
+
+async function pedirListadoIngresos(b64, claveDespacho) {
   const resp = await fetch("/api/extraer", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-asema-key": limpiaClave(claveDespacho) },
@@ -345,6 +346,67 @@ async function extraerListadoIngresos(file, claveDespacho) {
   if (!resp.ok) throw new Error(data.error || `Error del servidor (HTTP ${resp.status})`);
   if (!Array.isArray(data.facturas)) throw new Error("Respuesta inesperada del servidor.");
   return data.facturas;
+}
+
+/* Lee el listado por bloques de páginas (si la IA corta el JSON, el bloque se parte
+   en mitades, como en las facturas escaneadas) y une cada factura con su CIF. */
+async function extraerListadoIngresos(file, claveDespacho, onProgreso) {
+  let doc = null;
+  try { doc = await PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true }); } catch { doc = null; }
+  if (!doc) return unirCifsListado(await pedirListadoIngresos(await toB64(file), claveDespacho));
+
+  async function procesarIndices(indices) {
+    const sub = await PDFDocument.create();
+    (await sub.copyPages(doc, indices)).forEach((pg) => sub.addPage(pg));
+    const b64 = abToB64(await sub.save());
+    try {
+      return await pedirListadoIngresos(b64, claveDespacho);
+    } catch (e) {
+      if (/incompleta/i.test(e.message || "") && indices.length > 1) {
+        const mid = Math.ceil(indices.length / 2);
+        return [...(await procesarIndices(indices.slice(0, mid))), ...(await procesarIndices(indices.slice(mid)))];
+      }
+      throw e;
+    }
+  }
+
+  const nPag = doc.getPageCount();
+  const nBloques = Math.ceil(nPag / PAGINAS_LISTADO_INGRESOS);
+  const items = [];
+  for (let b = 0; b < nBloques; b++) {
+    if (onProgreso) onProgreso(b + 1, nBloques);
+    const indices = [];
+    for (let p = b * PAGINAS_LISTADO_INGRESOS; p < Math.min((b + 1) * PAGINAS_LISTADO_INGRESOS, nPag); p++) indices.push(p);
+    items.push(...(await procesarIndices(indices)));
+  }
+  return unirCifsListado(items);
+}
+
+/* Separa la tabla "Datos de clientes" (código → CIF) de las facturas, arrastra el
+   cliente a las líneas que continúan de la página anterior y pone a cada factura su
+   CIF (por código de cliente; si no, por nombre). Si el listado ya trae el CIF en la
+   propia línea, se respeta. */
+function unirCifsListado(items) {
+  const cifPorCodigo = {}, cifPorNombre = {};
+  const facturas = [];
+  for (const it of items) {
+    if (String(it.tipo || "").toLowerCase() === "cliente") {
+      const nif = limpiaNif(it.nif);
+      if (nif !== "0") {
+        if (String(it.codigo || "").trim()) cifPorCodigo[String(it.codigo).trim()] = nif;
+        if (it.nombre) cifPorNombre[normNombre(it.nombre)] = nif;
+      }
+    } else facturas.push(it);
+  }
+  let ultCodigo = "", ultRazon = "";
+  for (const f of facturas) {
+    const cod = String(f.codigo || "").trim(), raz = String(f.razon || "").trim();
+    if (!cod && !raz) { f.codigo = ultCodigo; f.razon = ultRazon; } else { ultCodigo = cod; ultRazon = raz; }
+    if (limpiaNif(f.cif) === "0") {
+      f.cif = cifPorCodigo[String(f.codigo || "").trim()] || cifPorNombre[normNombre(f.razon)] || "";
+    }
+  }
+  return facturas;
 }
 
 /* Convierte las líneas del listado PDF en filas de la tabla */
@@ -489,14 +551,18 @@ function facturasASLRows(facturas, fileName, ent, asignador, tri, anio, banco) {
 }
 
 /* ---------- Listado de ingresos (Matilde) → filas SL ----------
-   Cada línea es una venta. Empareja el cliente por CIF si el listado lo trae
-   (2T en adelante), o por nombre/razón si no (1T). IVA y total del propio listado. */
+   Cada línea es una venta. Empareja el cliente por CIF (el del listado o el de la
+   tabla "Datos de clientes"), o por nombre si no lo hay. Si sigue sin CIF pero el
+   cliente se reconoce, se toma el CIF que Monitor tiene para esa subcuenta. */
 function listadoMatildeASLRows(items, fileName, ent, asignador, tri, anio, banco) {
   const rows = [];
+  const cifPorSubcuenta = {};
+  for (const [cif, sub] of Object.entries(ent.nifCliente || {})) cifPorSubcuenta[sub] = cif;
   items.forEach((f) => {
     const razon = String(f.razon || f.contraparte || "").toUpperCase().trim();
-    const nif = limpiaNif(f.cif); // "0" si el listado aún no trae CIF
+    let nif = limpiaNif(f.cif); // "0" si no hay CIF en el listado
     const asg = asignador.asigna({ nif, nombre: razon, sentido: "venta" });
+    if (nif === "0" && asg.sub && cifPorSubcuenta[asg.sub]) nif = cifPorSubcuenta[asg.sub];
     const base = num(f.base);
     const iva = num(f.cuota_iva);
     let tipoIva = num(f.tipo_iva);
@@ -815,22 +881,31 @@ REGLAS:
 Sé exhaustivo: extrae TODAS las líneas de ambas columnas, de todas las páginas.`;
 
 /* ---------- Prompt para LISTADO DE INGRESOS (administración de comunidades) ---------- */
-const promptListadoIngresos = `Eres el sistema de extracción contable de una asesoría española. El documento es un LISTADO de FACTURAS EMITIDAS (ingresos) de una administración de fincas y comunidades. Cada fila es una factura de ingreso a una comunidad o cliente.
+const promptListadoIngresos = `Eres el sistema de extracción contable de una asesoría española. Las páginas adjuntas son de un LISTADO de FACTURAS EMITIDAS (ingresos) de una administración de fincas y comunidades, y pueden incluir además una tabla "DATOS DE CLIENTES".
 
-Columnas habituales: Nº Factura, Fecha, Código, Razón (nombre de la comunidad/cliente), Cuotas (base imponible), IRPF, IVA (importe), Total. ALGUNOS listados traen ADEMÁS una columna con el CIF/NIF del cliente: si existe, extráela; si no, deja "cif":"".
+FORMATOS POSIBLES DE LAS FACTURAS:
+a) Una fila por factura con columnas Nº Factura, Fecha, Código, Razón, Cuotas, IRPF, IVA, Total (y a veces CIF).
+b) Agrupado por cliente: una línea "Cliente Nombre" (código de 6 cifras, p.ej. 000001, y el nombre de la comunidad) y debajo varias facturas con columnas Serie/Nº Factura, Fecha, Bases, Cuota IVA, IRPF, Req., Total, Pendiente. El código y el nombre del cliente se aplican a TODAS las facturas que hay debajo hasta el siguiente cliente.
 
-Devuelve EXCLUSIVAMENTE un objeto JSON válido, sin markdown ni texto alrededor:
-{"facturas":[{"numero":"000001","fecha":"16/01/2026","razon":"MARQUES DE LA ENSENADA 17","cif":"","base":70.00,"tipo_iva":21,"cuota_iva":14.70,"total":84.70}]}
+TABLA "DATOS DE CLIENTES" (si aparece en estas páginas): columnas Código, Nombre, Dirección, C. Postal, NIF.
+
+Devuelve EXCLUSIVAMENTE un objeto JSON válido, sin markdown ni texto alrededor, con TODO dentro de "facturas":
+{"facturas":[
+ {"tipo":"factura","codigo":"000001","razon":"MARQUES DE LA ENSENADA 17","cif":"","numero":"000460","fecha":"16/07/2026","base":70.00,"tipo_iva":21,"cuota_iva":14.70,"total":84.70},
+ {"tipo":"cliente","codigo":"000001","nombre":"MARQUES DE LA ENSENADA 17","nif":"H72165459"}
+]}
 
 REGLAS:
-- Una entrada en "facturas" por cada fila de factura. Ignora cabeceras, subtotales y la fila de TOTALES del final.
-- "razon": el nombre del cliente/comunidad tal cual figura en la columna Razón, en mayúsculas.
-- "cif": el CIF/NIF del cliente SOLO si el listado trae esa columna; en mayúsculas, sin espacios ni puntos ni guiones. Si no aparece, "".
-- Importes con punto decimal y 2 decimales (convierte la coma decimal a punto: 70,00 → 70.00).
-- "base": columna Cuotas. "cuota_iva": columna IVA (importe). "total": columna Total.
+- Una entrada "tipo":"factura" por cada factura. Ignora cabeceras de columnas, subtotales por cliente y la fila de TOTALES.
+- En el formato agrupado, repite en cada factura el "codigo" y la "razon" de su cliente. EXCEPCIÓN: si las primeras facturas de una página no tienen encima su línea de cliente (continúan del cliente de la página anterior), pon "codigo":"" y "razon":"" en ellas; NO lo inventes.
+- "razon": el nombre del cliente/comunidad en mayúsculas. "codigo": el código de cliente tal cual (con sus ceros), o "" si no hay.
+- "cif": el CIF/NIF del cliente SOLO si la fila de la factura lo trae; si no, "".
+- Una entrada "tipo":"cliente" por cada fila de la tabla DATOS DE CLIENTES: "codigo", "nombre" y "nif" (en mayúsculas, sin espacios, puntos ni guiones). Si en estas páginas no hay esa tabla, no pongas ninguna.
+- Importes con punto decimal y 2 decimales (70,00 → 70.00).
+- "base": columna Bases o Cuotas. "cuota_iva": columna Cuota IVA o IVA (importe). "total": columna Total. Ignora la columna Pendiente.
 - "tipo_iva": calcúlalo de base e IVA y redondea (14.70 / 70.00 ≈ 21). Si IRPF no es 0, no lo restes de la base.
-- "fecha": dd/mm/aaaa.
-- Sé exhaustivo: TODAS las filas de TODAS las páginas.`;
+- "fecha": dd/mm/aaaa. "numero": el número de factura tal cual (con sus ceros).
+- Sé exhaustivo: TODAS las facturas y TODAS las filas de clientes de estas páginas.`;
 
 const PLANTILLAS = [
   { id: "ventas001", nombre: "Excel · Ferretería El Paso — Ventas Serie 001 (comercio mayor)", tipo: "excel", trimestral: true, fn: parseVentasSerie001 },
@@ -1053,14 +1128,16 @@ export default function App() {
     if (file.size > MAX_MB * 1024 * 1024) { setSlMsg(`El PDF supera los ${MAX_MB} MB. Divídelo o redúcelo.`); return; }
     setSlMsg("Leyendo el listado de ingresos con IA… (puede tardar unos segundos)");
     try {
-      const items = await extraerListadoIngresos(file, claveDespacho);
+      const items = await extraerListadoIngresos(file, claveDespacho,
+        (b, n) => setSlMsg(`Leyendo el listado de ingresos con IA… bloque ${b} de ${n}`));
       if (!items.length) { setSlMsg("La IA no encontró líneas en el listado. Revisa el PDF."); return; }
       const asignador = crearAsignador(ent, cargarMapaNif(ent.id));
       const nuevas = listadoMatildeASLRows(items, file.name, ent, asignador, trimestreSel, anioSel, bancoSel);
       guardarMapaNif(ent.id, asignador.dump());
       setRowsSL((p) => [...p, ...nuevas]);
       const conCif = nuevas.filter((r) => r.nif && r.nif !== "0").length;
-      setSlMsg(`Importadas ${nuevas.length} líneas de ingresos${conCif ? ` (${conCif} con CIF)` : " (sin columna CIF: clientes emparejados por nombre, NIF en blanco)"}. Revísalas abajo antes de exportar.`);
+      const sinCif = nuevas.length - conCif;
+      setSlMsg(`Importadas ${nuevas.length} líneas de ingresos: ${conCif} con CIF${sinCif ? `, ${sinCif} sin CIF (revísalas)` : ""}. Revísalas abajo antes de exportar.`);
     } catch (e) {
       if (e.auth) { salir(); setAvisoClave("La clave del despacho no es correcta. Vuelve a introducirla."); return; }
       setSlMsg("Error al leer el listado: " + (e.message || "desconocido"));
@@ -1972,7 +2049,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.8 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.9 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
