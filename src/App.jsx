@@ -821,7 +821,6 @@ function parseVentasAaronCabecera(rows) {
   const iFec = col(["FECHA"]);
   const iBase = head.findIndex((c) => c === "BASE" || c.startsWith("BASE"));
   const iIva = head.findIndex((c) => c === "IVA" || c.startsWith("IVA"));
-  const iImp = col(["IMPORTE", "TOTAL"]);
   const iNif = col(["CIF", "NIF", "DNI"]);
   const out = [];
   for (let i = h + 1; i < rows.length; i++) {
@@ -832,7 +831,10 @@ function parseVentasAaronCabecera(rows) {
     if (!nombre || !numero || !isFinite(base)) continue;
     // Saltar fila de totales (suele no tener nº de factura válido, ya filtrado)
     const iva = num(r[iIva]);
-    const total = iImp >= 0 ? num(r[iImp]) : NaN;
+    // El IMPORTE de Aaron incluye el recargo de equivalencia (R.E.) de sus clientes
+    // minoristas, que en nuestra contabilidad no se registra: el total es SIEMPRE
+    // base + IVA, aunque no coincida con el IMPORTE del cuadrante.
+    const total = r2((isFinite(base) ? base : 0) + (isFinite(iva) ? iva : 0));
     const tipo = isFinite(base) && base !== 0 && isFinite(iva) ? Math.round((iva / base) * 100) : 10;
     out.push(filaListado({
       contraparte: nombre.toUpperCase(),
@@ -840,7 +842,7 @@ function parseVentasAaronCabecera(rows) {
       numero,
       fecha: excelFechaANum(r[iFec]),
       base, tipoIva: tipo, cuotaIva: iva,
-      total: isFinite(total) ? total : r2(base + (isFinite(iva) ? iva : 0)),
+      total,
       cuenta: 1, fileName: "Ventas Aaron",
     }));
   }
@@ -2049,7 +2051,7 @@ export default function App() {
         )}
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.gris, paddingBottom: 16 }}>
-          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v3.9 — revisa siempre los apuntes antes de importar en Monitor.
+          ASEMA Advisory · Chiclana de la Frontera · Herramienta interna del despacho · v4.0 — revisa siempre los apuntes antes de importar en Monitor.
         </footer>
       </main>
     </div>
